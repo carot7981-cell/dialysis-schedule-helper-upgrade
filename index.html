@@ -92,7 +92,6 @@
       let records = [];
       let activeTab = "write";
       let searchText = "";
-      let statusFilter = "전체";
       let lastResult = "";
 
       const fields = [
@@ -162,7 +161,6 @@
           record.vascularVisitDate,
           record.labNote,
           cleanDisplayText(record.memo || ""),
-          record.status
         ].map((value) => String(value || "").trim().toLowerCase()).join("|");
       }
 
@@ -240,14 +238,13 @@
       }
       const thisMonth = (event) => event.date.slice(0, 7) === todayIso().slice(0, 7);
       const upcoming = (event) => event.date >= todayIso() && event.date <= addDays(7);
-      const filteredRecords = () => records.filter((record) => [record.title, record.patientHint, record.ward, record.labNote, record.memo].join(" ").toLowerCase().includes(searchText.toLowerCase()) && (statusFilter === "전체" || record.status === statusFilter));
+      const filteredRecords = () => records.filter((record) => [record.title, record.patientHint, record.ward, record.labNote, record.memo].join(" ").toLowerCase().includes(searchText.toLowerCase()));
 
       function render() {
         const events = getEvents();
         const todayEvents = events.filter((event) => event.date === todayIso());
         const upcomingEvents = events.filter(upcoming);
         const monthEvents = events.filter(thisMonth);
-        const pendingCount = records.filter((record) => record.status === "확인 전").length;
         const config = getConfig();
         app.innerHTML = `
           <main class="shell">
@@ -263,7 +260,7 @@
               <article><span>등록 일정</span><strong>${records.length}건</strong></article>
               <article><span>오늘 확인</span><strong>${todayEvents.length}건</strong></article>
               <article><span>이번 달 일정</span><strong>${monthEvents.length}건</strong></article>
-              <article><span>확인 전</span><strong>${pendingCount}건</strong></article>
+              <article><span>가까운 일정</span><strong>${upcomingEvents.length}건</strong></article>
             </section>
             <nav class="tabs" aria-label="보기 선택">
               ${tabButton("write", "입력")}${tabButton("today", "오늘")}${tabButton("upcoming", "가까운 일정")}${tabButton("month", "이번 달")}${tabButton("all", "전체 목록")}${tabButton("settings", "연결 설정")}
@@ -289,7 +286,6 @@
             <div class="date-grid">${fields.map(([key, label]) => `<label>${label}<input name="${key}" type="date" /></label>`).join("")}</div>
             <label>혈액검사 특이 소견<textarea name="labNote" placeholder="판단이나 진단 대신 확인해야 할 메모만 적어 주세요."></textarea></label>
             <label>비고<textarea name="memo" placeholder="예: 회진 전 확인, 보호자 설명 여부"></textarea></label>
-            <label>확인 상태<select name="status"><option>확인 전</option><option>확인 완료</option></select></label>
             <button class="primary" type="submit">결과 생성 및 저장</button>
           </form>
           <aside class="panel side">
@@ -310,11 +306,11 @@
           <button class="primary" type="submit">연결 정보 저장</button>
         </form>`;
       const renderEventList = (title, items, empty) => `<section class="panel"><div class="section-title"><h2>${title}</h2><p>${items.length}건</p></div><div class="cards">${items.length ? items.map(renderEventCard).join("") : `<p class="empty">${empty}</p>`}</div></section>`;
-      const renderEventCard = (event) => `<article class="event"><div><strong>${escapeHtml(event.date)} · ${escapeHtml(event.type)}</strong><span>${escapeHtml(event.record.patientHint)} / ${escapeHtml(event.record.ward || "-")} / ${escapeHtml(event.record.status)}</span></div><p>특이 소견: ${escapeHtml(cleanDisplayText(event.record.labNote || "-"))} · 비고: ${escapeHtml(cleanDisplayText(event.record.memo || "-"))}</p></article>`;
+      const renderEventCard = (event) => `<article class="event"><div><strong>${escapeHtml(event.date)} · ${escapeHtml(event.type)}</strong><span>${escapeHtml(event.record.patientHint)} / ${escapeHtml(event.record.ward || "-")}</span></div><p>특이 소견: ${escapeHtml(cleanDisplayText(event.record.labNote || "-"))} · 비고: ${escapeHtml(cleanDisplayText(event.record.memo || "-"))}</p></article>`;
       function renderAllView(events) {
         const visible = filteredRecords();
         const dateCell = (value) => escapeHtml(value || "-");
-        return `<section class="panel"><div class="section-title"><h2>저장된 기록</h2><p>${visible.length}건 표시</p></div><div class="filters"><input id="search" placeholder="환자 식별 정보, 병동, 메모 검색" value="${escapeHtml(searchText)}" /><select id="status-filter"><option ${statusFilter === "전체" ? "selected" : ""}>전체</option><option ${statusFilter === "확인 전" ? "selected" : ""}>확인 전</option><option ${statusFilter === "확인 완료" ? "selected" : ""}>확인 완료</option></select></div><div class="table-wrap"><table><thead><tr><th>환자</th><th>구분</th><th>상태</th><th>신환 검사</th><th>1개월 검사</th><th>3개월 검사</th><th>6개월 검사</th><th>이번 처방</th><th>다음 처방</th><th>혈관외과</th><th>다가오는 일정</th><th>메모</th></tr></thead><tbody>${visible.length ? visible.map((record) => { const next = events.find((event) => event.record.id === record.id && event.date >= todayIso()); return `<tr><td>${escapeHtml(record.patientHint)}</td><td>${escapeHtml(record.ward || "-")}</td><td>${escapeHtml(record.status)}</td><td>${dateCell(record.newPatientDate)}</td><td>${dateCell(record.oneMonthDate)}</td><td>${dateCell(record.threeMonthDate)}</td><td>${dateCell(record.sixMonthDate)}</td><td>${dateCell(record.prescriptionDate)}</td><td>${dateCell(record.nextPrescriptionDate)}</td><td>${dateCell(record.vascularVisitDate)}</td><td>${next ? `${escapeHtml(next.date)} ${escapeHtml(next.type)}` : "-"}</td><td>${escapeHtml(cleanDisplayText(record.memo || "-"))}</td></tr>`; }).join("") : `<tr><td colspan="12">표시할 일정이 없습니다.</td></tr>`}</tbody></table></div></section>`;
+        return `<section class="panel"><div class="section-title"><h2>저장된 기록</h2><p>${visible.length}건 표시</p></div><div class="filters"><input id="search" placeholder="환자 식별 정보, 병동, 메모 검색" value="${escapeHtml(searchText)}" /></div><div class="table-wrap"><table><thead><tr><th>환자</th><th>구분</th><th>신환 검사</th><th>1개월 검사</th><th>3개월 검사</th><th>6개월 검사</th><th>이번 처방</th><th>다음 처방</th><th>혈관외과</th><th>다가오는 일정</th><th>메모</th></tr></thead><tbody>${visible.length ? visible.map((record) => { const next = events.find((event) => event.record.id === record.id && event.date >= todayIso()); return `<tr><td>${escapeHtml(record.patientHint)}</td><td>${escapeHtml(record.ward || "-")}</td><td>${dateCell(record.newPatientDate)}</td><td>${dateCell(record.oneMonthDate)}</td><td>${dateCell(record.threeMonthDate)}</td><td>${dateCell(record.sixMonthDate)}</td><td>${dateCell(record.prescriptionDate)}</td><td>${dateCell(record.nextPrescriptionDate)}</td><td>${dateCell(record.vascularVisitDate)}</td><td>${next ? `${escapeHtml(next.date)} ${escapeHtml(next.type)}` : "-"}</td><td>${escapeHtml(cleanDisplayText(record.memo || "-"))}</td></tr>`; }).join("") : `<tr><td colspan="11">표시할 일정이 없습니다.</td></tr>`}</tbody></table></div></section>`;
       }
 
       function bindEvents() {
@@ -336,8 +332,7 @@
             nextPrescriptionDate: String(form.get("nextPrescriptionDate") || ""),
             vascularVisitDate: String(form.get("vascularVisitDate") || ""),
             labNote: String(form.get("labNote") || "").trim(),
-            memo: String(form.get("memo") || "").trim(),
-            status: String(form.get("status")) === "확인 완료" ? "확인 완료" : "확인 전"
+            memo: String(form.get("memo") || "").trim()
           });
           await persistRecord(record);
           lastResult = `${record.patientHint} 일정이 저장됐습니다.`;
@@ -354,7 +349,6 @@
         document.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => handleAction(button.dataset.action || "")));
         document.querySelector("#csv-upload")?.addEventListener("change", handleCsvUpload);
         document.querySelector("#search")?.addEventListener("input", (event) => { searchText = event.currentTarget.value; render(); });
-        document.querySelector("#status-filter")?.addEventListener("change", (event) => { statusFilter = event.currentTarget.value; render(); });
       }
 
       function handleAction(action) {
@@ -415,8 +409,8 @@
         return { synced: !error, added: uniqueImported.length };
       }
       function toCsv(source) {
-        const header = ["환자 식별 정보", "병동/구분", "신환", "1개월", "3개월", "6개월", "이번 처방", "다음 처방", "혈관외과", "특이 소견", "비고", "상태"];
-        const rows = source.map((record) => [record.patientHint, record.ward, record.newPatientDate, record.oneMonthDate, record.threeMonthDate, record.sixMonthDate, record.prescriptionDate, record.nextPrescriptionDate, record.vascularVisitDate, record.labNote, record.memo, record.status]);
+        const header = ["환자 식별 정보", "병동/구분", "신환", "1개월", "3개월", "6개월", "이번 처방", "다음 처방", "혈관외과", "특이 소견", "비고"];
+        const rows = source.map((record) => [record.patientHint, record.ward, record.newPatientDate, record.oneMonthDate, record.threeMonthDate, record.sixMonthDate, record.prescriptionDate, record.nextPrescriptionDate, record.vascularVisitDate, record.labNote, record.memo]);
         return [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join(String.fromCharCode(10));
       }
       async function fileToRecords(file) {
@@ -455,7 +449,7 @@
           vascularVisitDate: indexOf("혈관외과", "혈관외과 방문일"),
           labNote: indexOf("특이 소견", "혈액검사 특이 소견"),
           memo: indexOf("비고", "메모"),
-          status: indexOf("상태", "확인 상태")
+          status: undefined
         };
         const knownIndexes = new Set(Object.values(indexes).filter((index) => index !== undefined));
         const pickRaw = (row, key) => indexes[key] === undefined ? "" : row[indexes[key]];
@@ -487,14 +481,13 @@
             nextPrescriptionDate: normalizeDate(pickRaw(row, "nextPrescriptionDate")),
             vascularVisitDate: normalizeDate(pickRaw(row, "vascularVisitDate")),
             labNote: pickText(row, "labNote"),
-            memo: [baseMemo, extraMemo ? `추가 내용: ${extraMemo}` : ""].filter(Boolean).join(" / "),
-            status: pickText(row, "status") === "확인 완료" ? "확인 완료" : "확인 전"
+            memo: [baseMemo, extraMemo ? `추가 내용: ${extraMemo}` : ""].filter(Boolean).join(" / ")
           };
           return makeRecord(values);
         }).filter(Boolean);
       }
       function findHeaderRow(rows) {
-        const scoreRow = (row) => row.map(normalizeHeader).filter((cell) => ["환자식별정보", "환자", "병동/구분", "병동", "신환", "신환검사일", "1개월", "3개월", "6개월", "이번처방", "이번달처방", "이번달처방날짜", "처방날짜", "처방일", "prescriptiondate", "currentprescriptiondate", "thismonthprescriptiondate", "rxdate", "다음처방", "다음처방날짜", "nextprescriptiondate", "nextprescription", "nextrxdate", "혈관외과", "비고", "메모", "상태"].includes(cell)).length;
+        const scoreRow = (row) => row.map(normalizeHeader).filter((cell) => ["환자식별정보", "환자", "병동/구분", "병동", "신환", "신환검사일", "1개월", "3개월", "6개월", "이번처방", "이번달처방", "이번달처방날짜", "처방날짜", "처방일", "prescriptiondate", "currentprescriptiondate", "thismonthprescriptiondate", "rxdate", "다음처방", "다음처방날짜", "nextprescriptiondate", "nextprescription", "nextrxdate", "혈관외과", "비고", "메모"].includes(cell)).length;
         let bestIndex = 0;
         let bestScore = 0;
         rows.slice(0, 12).forEach((row, index) => {
@@ -575,7 +568,7 @@
       }
       function toTextSummary(events) {
         if (!events.length) return "등록된 일정이 없습니다.";
-        return [`투석 환자 일정 체크 도우미 요약`, `생성일: ${todayIso()}`, ""].concat(events.map((event) => `- ${event.date} | ${event.record.patientHint} | ${event.type} | ${event.record.ward || "-"} | ${event.record.status} | ${event.record.memo || "-"}`)).join(String.fromCharCode(10));
+        return [`투석 환자 일정 체크 도우미 요약`, `생성일: ${todayIso()}`, ""].concat(events.map((event) => `- ${event.date} | ${event.record.patientHint} | ${event.type} | ${event.record.ward || "-"} | ${event.record.memo || "-"}`)).join(String.fromCharCode(10));
       }
       function download(filename, content, mime) {
         const blob = new Blob([`${String.fromCharCode(65279)}${content}`], { type: mime });

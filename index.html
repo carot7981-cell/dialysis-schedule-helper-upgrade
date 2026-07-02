@@ -245,6 +245,7 @@
           <aside class="panel side">
             <div class="section-title"><h2>도구</h2><p>샘플과 내려받기</p></div>
             <button type="button" data-action="sample">샘플 데이터 넣기</button>
+            <label>CSV 업로드<input id="csv-upload" type="file" accept=".csv,text/csv" /></label>
             <button type="button" data-action="downloadCsv">CSV 다운로드</button>
             <button type="button" data-action="downloadTxt">TXT 요약 다운로드</button>
             <button type="button" data-action="clear">화면 목록 비우기</button>
@@ -300,6 +301,7 @@
           render();
         });
         document.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => handleAction(button.dataset.action || "")));
+        document.querySelector("#csv-upload")?.addEventListener("change", handleCsvUpload);
         document.querySelector("#search")?.addEventListener("input", (event) => { searchText = event.currentTarget.value; render(); });
         document.querySelector("#status-filter")?.addEventListener("change", (event) => { statusFilter = event.currentTarget.value; render(); });
       }
@@ -311,10 +313,125 @@
         if (action === "downloadTxt") download("dialysis_schedule_summary.txt", toTextSummary(getEvents()), "text/plain;charset=utf-8");
         render();
       }
+      async function handleCsvUpload(event) {
+        const file = event.currentTarget.files?.[0];
+        if (!file) return;
+        try {
+          const text = await file.text();
+          const imported = csvToRecords(text);
+          if (!imported.length) {
+            lastResult = "가져올 수 있는 일정이 없습니다. CSV 파일 내용을 확인해 주세요.";
+            render();
+            return;
+          }
+          const synced = await persistRecords(imported);
+          lastResult = synced ? `CSV에서 ${imported.length}건을 가져왔습니다.` : `CSV에서 ${imported.length}건을 가져왔고, Supabase 저장은 확인이 필요합니다.`;
+        } catch (error) {
+          lastResult = "CSV 업로드 중 오류가 났습니다. 파일 형식을 확인해 주세요.";
+        }
+        render();
+      }
+      async function persistRecords(imported) {
+        records = [...imported, ...records.filter((item) => !imported.some((record) => record.id === item.id))];
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+        const supabase = getSupabase();
+        if (!supabase) return true;
+        const rows = imported.map((record) => ({
+          id: record.id,
+          title: record.title,
+          input_text: record.patientHint,
+          result_text: record.labNote,
+          category: record.ward,
+          status: record.status,
+          memo: record.memo,
+          patient_hint: record.patientHint,
+          new_patient_date: record.newPatientDate || null,
+          one_month_date: record.oneMonthDate || null,
+          three_month_date: record.threeMonthDate || null,
+          six_month_date: record.sixMonthDate || null,
+          prescription_date: record.prescriptionDate || null,
+          next_prescription_date: record.nextPrescriptionDate || null,
+          vascular_visit_date: record.vascularVisitDate || null,
+          updated_at: record.updatedAt
+        }));
+        const { error } = await supabase.from("records").upsert(rows);
+        return !error;
+      }
       function toCsv(source) {
         const header = ["환자 식별 정보", "병동/구분", "신환", "1개월", "3개월", "6개월", "이번 처방", "다음 처방", "혈관외과", "특이 소견", "비고", "상태"];
         const rows = source.map((record) => [record.patientHint, record.ward, record.newPatientDate, record.oneMonthDate, record.threeMonthDate, record.sixMonthDate, record.prescriptionDate, record.nextPrescriptionDate, record.vascularVisitDate, record.labNote, record.memo, record.status]);
         return [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\\n");
+      }
+      function csvToRecords(text) {
+        const rows = parseCsv(text.replace(/^\\uFEFF/, "")).filter((row) => row.some((cell) => cell.trim()));
+        if (rows.length < 2) return [];
+        const header = rows[0].map((cell) => cell.trim());
+        const indexOf = (...names) => names.map((name) => header.indexOf(name)).find((index) => index >= 0);
+        const indexes = {
+          patientHint: indexOf("환자 식별 정보", "환자", "환자식별정보"),
+          ward: indexOf("병동/구분", "병동", "구분"),
+          newPatientDate: indexOf("신환", "신환 검사일"),
+          oneMonthDate: indexOf("1개월", "1개월 검사일"),
+          threeMonthDate: indexOf("3개월", "3개월 검사일"),
+          sixMonthDate: indexOf("6개월", "6개월 검사일"),
+          prescriptionDate: indexOf("이번 처방", "이번 처방일"),
+          nextPrescriptionDate: indexOf("다음 처방", "다음 처방일"),
+          vascularVisitDate: indexOf("혈관외과", "혈관외과 방문일"),
+          labNote: indexOf("특이 소견", "혈액검사 특이 소견"),
+          memo: indexOf("비고", "메모"),
+          status: indexOf("상태", "확인 상태")
+        };
+        const pick = (row, key) => indexes[key] === undefined ? "" : String(row[indexes[key]] || "").trim();
+        return rows.slice(1).map((row) => {
+          const patientHint = pick(row, "patientHint");
+          const values = {
+            patientHint,
+            ward: pick(row, "ward"),
+            newPatientDate: normalizeDate(pick(row, "newPatientDate")),
+            oneMonthDate: normalizeDate(pick(row, "oneMonthDate")),
+            threeMonthDate: normalizeDate(pick(row, "threeMonthDate")),
+            sixMonthDate: normalizeDate(pick(row, "sixMonthDate")),
+            prescriptionDate: normalizeDate(pick(row, "prescriptionDate")),
+            nextPrescriptionDate: normalizeDate(pick(row, "nextPrescriptionDate")),
+            vascularVisitDate: normalizeDate(pick(row, "vascularVisitDate")),
+            labNote: pick(row, "labNote"),
+            memo: pick(row, "memo"),
+            status: pick(row, "status") === "확인 완료" ? "확인 완료" : "확인 전"
+          };
+          return patientHint && fields.some(([key]) => values[key]) ? makeRecord(values) : null;
+        }).filter(Boolean);
+      }
+      function parseCsv(text) {
+        const rows = [];
+        let row = [];
+        let cell = "";
+        let quoted = false;
+        for (let i = 0; i < text.length; i += 1) {
+          const char = text[i];
+          const next = text[i + 1];
+          if (char === '"' && quoted && next === '"') { cell += '"'; i += 1; continue; }
+          if (char === '"') { quoted = !quoted; continue; }
+          if (char === "," && !quoted) { row.push(cell); cell = ""; continue; }
+          if ((char === "\\n" || char === "\\r") && !quoted) {
+            if (char === "\\r" && next === "\\n") i += 1;
+            row.push(cell);
+            rows.push(row);
+            row = [];
+            cell = "";
+            continue;
+          }
+          cell += char;
+        }
+        row.push(cell);
+        rows.push(row);
+        return rows;
+      }
+      function normalizeDate(value) {
+        const trimmed = String(value || "").trim();
+        if (!trimmed) return "";
+        const match = trimmed.match(/^(\\d{4})[-/.](\\d{1,2})[-/.](\\d{1,2})$/);
+        if (!match) return "";
+        return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
       }
       function toTextSummary(events) {
         if (!events.length) return "등록된 일정이 없습니다.";

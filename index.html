@@ -59,6 +59,7 @@
     <div id="app"></div>
     <script type="module">
       import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+      import * as XLSX from "https://esm.sh/xlsx@0.18.5";
 
       const STORAGE_KEY = "dialysis-schedule-helper.records.v2";
       const CONFIG_KEY = "dialysis-schedule-helper.supabase";
@@ -243,9 +244,9 @@
             <button class="primary" type="submit">결과 생성 및 저장</button>
           </form>
           <aside class="panel side">
-            <div class="section-title"><h2>도구</h2><p>샘플과 내려받기</p></div>
+            <div class="section-title"><h2>도구</h2><p>샘플, 업로드, 내려받기</p></div>
             <button type="button" data-action="sample">샘플 데이터 넣기</button>
-            <label>CSV 업로드<input id="csv-upload" type="file" accept=".csv,text/csv" /></label>
+            <label>파일 업로드<input id="csv-upload" type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,text/csv,text/tab-separated-values,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" /></label>
             <button type="button" data-action="downloadCsv">CSV 다운로드</button>
             <button type="button" data-action="downloadTxt">TXT 요약 다운로드</button>
             <button type="button" data-action="clear">화면 목록 비우기</button>
@@ -317,17 +318,16 @@
         const file = event.currentTarget.files?.[0];
         if (!file) return;
         try {
-          const text = await file.text();
-          const imported = csvToRecords(text);
+          const imported = await fileToRecords(file);
           if (!imported.length) {
-            lastResult = "가져올 수 있는 일정이 없습니다. CSV 파일 내용을 확인해 주세요.";
+            lastResult = "가져올 수 있는 일정이 없습니다. 파일의 첫 행 제목과 날짜 내용을 확인해 주세요.";
             render();
             return;
           }
           const synced = await persistRecords(imported);
-          lastResult = synced ? `CSV에서 ${imported.length}건을 가져왔습니다.` : `CSV에서 ${imported.length}건을 가져왔고, Supabase 저장은 확인이 필요합니다.`;
+          lastResult = synced ? `${file.name}에서 ${imported.length}건을 가져왔습니다.` : `${file.name}에서 ${imported.length}건을 가져왔고, Supabase 저장은 확인이 필요합니다.`;
         } catch (error) {
-          lastResult = "CSV 업로드 중 오류가 났습니다. 파일 형식을 확인해 주세요.";
+          lastResult = "파일 업로드 중 오류가 났습니다. CSV, TSV, XLSX, XLS 형식인지 확인해 주세요.";
         }
         render();
       }
@@ -362,9 +362,23 @@
         const rows = source.map((record) => [record.patientHint, record.ward, record.newPatientDate, record.oneMonthDate, record.threeMonthDate, record.sixMonthDate, record.prescriptionDate, record.nextPrescriptionDate, record.vascularVisitDate, record.labNote, record.memo, record.status]);
         return [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join(String.fromCharCode(10));
       }
+      async function fileToRecords(file) {
+        const name = file.name.toLowerCase();
+        if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+          const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+          const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+          const rows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, raw: false, defval: "" });
+          return rowsToRecords(rows);
+        }
+        const cleanText = (await file.text()).replace(/\t/g, ",");
+        return csvToRecords(cleanText);
+      }
       function csvToRecords(text) {
         const cleanText = text.charCodeAt(0) === 65279 ? text.slice(1) : text;
         const rows = parseCsv(cleanText).filter((row) => row.some((cell) => cell.trim()));
+        return rowsToRecords(rows);
+      }
+      function rowsToRecords(rows) {
         if (rows.length < 2) return [];
         const header = rows[0].map((cell) => cell.trim());
         const indexOf = (...names) => names.map((name) => header.indexOf(name)).find((index) => index >= 0);

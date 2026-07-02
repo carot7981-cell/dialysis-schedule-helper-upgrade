@@ -367,7 +367,7 @@
         if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
           const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
           const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-          const rows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, raw: false, defval: "" });
+          const rows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, raw: true, defval: "" });
           return rowsToRecords(rows);
         }
         const cleanText = (await file.text()).replace(/\t/g, ",");
@@ -380,8 +380,8 @@
       }
       function rowsToRecords(rows) {
         if (rows.length < 2) return [];
-        const header = rows[0].map((cell) => cell.trim());
-        const indexOf = (...names) => names.map((name) => header.indexOf(name)).find((index) => index >= 0);
+        const header = rows[0].map(normalizeHeader);
+        const indexOf = (...names) => names.map((name) => header.indexOf(normalizeHeader(name))).find((index) => index >= 0);
         const indexes = {
           patientHint: indexOf("환자 식별 정보", "환자", "환자식별정보"),
           ward: indexOf("병동/구분", "병동", "구분"),
@@ -396,22 +396,23 @@
           memo: indexOf("비고", "메모"),
           status: indexOf("상태", "확인 상태")
         };
-        const pick = (row, key) => indexes[key] === undefined ? "" : String(row[indexes[key]] || "").trim();
+        const pickRaw = (row, key) => indexes[key] === undefined ? "" : row[indexes[key]];
+        const pickText = (row, key) => String(pickRaw(row, key) || "").trim();
         return rows.slice(1).map((row) => {
-          const patientHint = pick(row, "patientHint");
+          const patientHint = pickText(row, "patientHint");
           const values = {
             patientHint,
-            ward: pick(row, "ward"),
-            newPatientDate: normalizeDate(pick(row, "newPatientDate")),
-            oneMonthDate: normalizeDate(pick(row, "oneMonthDate")),
-            threeMonthDate: normalizeDate(pick(row, "threeMonthDate")),
-            sixMonthDate: normalizeDate(pick(row, "sixMonthDate")),
-            prescriptionDate: normalizeDate(pick(row, "prescriptionDate")),
-            nextPrescriptionDate: normalizeDate(pick(row, "nextPrescriptionDate")),
-            vascularVisitDate: normalizeDate(pick(row, "vascularVisitDate")),
-            labNote: pick(row, "labNote"),
-            memo: pick(row, "memo"),
-            status: pick(row, "status") === "확인 완료" ? "확인 완료" : "확인 전"
+            ward: pickText(row, "ward"),
+            newPatientDate: normalizeDate(pickRaw(row, "newPatientDate")),
+            oneMonthDate: normalizeDate(pickRaw(row, "oneMonthDate")),
+            threeMonthDate: normalizeDate(pickRaw(row, "threeMonthDate")),
+            sixMonthDate: normalizeDate(pickRaw(row, "sixMonthDate")),
+            prescriptionDate: normalizeDate(pickRaw(row, "prescriptionDate")),
+            nextPrescriptionDate: normalizeDate(pickRaw(row, "nextPrescriptionDate")),
+            vascularVisitDate: normalizeDate(pickRaw(row, "vascularVisitDate")),
+            labNote: pickText(row, "labNote"),
+            memo: pickText(row, "memo"),
+            status: pickText(row, "status") === "확인 완료" ? "확인 완료" : "확인 전"
           };
           return patientHint && fields.some(([key]) => values[key]) ? makeRecord(values) : null;
         }).filter(Boolean);
@@ -444,11 +445,23 @@
         return rows;
       }
       function normalizeDate(value) {
+        if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
+        if (typeof value === "number" && Number.isFinite(value)) {
+          const date = new Date(Date.UTC(1899, 11, 30) + Math.round(value) * 86400000);
+          return date.toISOString().slice(0, 10);
+        }
         const trimmed = String(value || "").trim();
         if (!trimmed) return "";
-        const match = trimmed.match(/^([0-9]{4})[-/.]([0-9]{1,2})[-/.]([0-9]{1,2})$/);
+        const normalized = trimmed.replace(/[년월]/g, "-").replace(/일/g, "").replace(/\s+/g, "").replace(/[.]/g, "-").replace(/-+/g, "-").replace(/-$/, "");
+        let match = normalized.match(/^([0-9]{4})[-/]([0-9]{1,2})[-/]([0-9]{1,2})$/);
+        if (match) return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+        match = normalized.match(/^([0-9]{1,2})[-/]([0-9]{1,2})[-/]([0-9]{2,4})$/);
         if (!match) return "";
-        return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+        const year = match[3].length === 2 ? `20${match[3]}` : match[3];
+        return `${year}-${match[1].padStart(2, "0")}-${match[2].padStart(2, "0")}`;
+      }
+      function normalizeHeader(value) {
+        return String(value || "").trim().replace(/\s+/g, "").replace(/[()]/g, "");
       }
       function toTextSummary(events) {
         if (!events.length) return "등록된 일정이 없습니다.";

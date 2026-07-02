@@ -360,10 +360,10 @@
       function toCsv(source) {
         const header = ["환자 식별 정보", "병동/구분", "신환", "1개월", "3개월", "6개월", "이번 처방", "다음 처방", "혈관외과", "특이 소견", "비고", "상태"];
         const rows = source.map((record) => [record.patientHint, record.ward, record.newPatientDate, record.oneMonthDate, record.threeMonthDate, record.sixMonthDate, record.prescriptionDate, record.nextPrescriptionDate, record.vascularVisitDate, record.labNote, record.memo, record.status]);
-        return [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\\n");
+        return [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n");
       }
       function csvToRecords(text) {
-        const rows = parseCsv(text.replace(/^\\uFEFF/, "")).filter((row) => row.some((cell) => cell.trim()));
+        const rows = parseCsv(text.replace(/^\uFEFF/, "")).filter((row) => row.some((cell) => cell.trim()));
         if (rows.length < 2) return [];
         const header = rows[0].map((cell) => cell.trim());
         const indexOf = (...names) => names.map((name) => header.indexOf(name)).find((index) => index >= 0);
@@ -412,8 +412,8 @@
           if (char === '"' && quoted && next === '"') { cell += '"'; i += 1; continue; }
           if (char === '"') { quoted = !quoted; continue; }
           if (char === "," && !quoted) { row.push(cell); cell = ""; continue; }
-          if ((char === "\\n" || char === "\\r") && !quoted) {
-            if (char === "\\r" && next === "\\n") i += 1;
+          if ((char === "\n" || char === "\r") && !quoted) {
+            if (char === "\r" && next === "\n") i += 1;
             row.push(cell);
             rows.push(row);
             row = [];
@@ -429,16 +429,16 @@
       function normalizeDate(value) {
         const trimmed = String(value || "").trim();
         if (!trimmed) return "";
-        const match = trimmed.match(/^(\\d{4})[-/.](\\d{1,2})[-/.](\\d{1,2})$/);
+        const match = trimmed.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
         if (!match) return "";
         return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
       }
       function toTextSummary(events) {
         if (!events.length) return "등록된 일정이 없습니다.";
-        return [`투석 환자 일정 체크 도우미 요약`, `생성일: ${todayIso()}`, ""].concat(events.map((event) => `- ${event.date} | ${event.record.patientHint} | ${event.type} | ${event.record.ward || "-"} | ${event.record.status} | ${event.record.memo || "-"}`)).join("\\n");
+        return [`투석 환자 일정 체크 도우미 요약`, `생성일: ${todayIso()}`, ""].concat(events.map((event) => `- ${event.date} | ${event.record.patientHint} | ${event.type} | ${event.record.ward || "-"} | ${event.record.status} | ${event.record.memo || "-"}`)).join("\n");
       }
       function download(filename, content, mime) {
-        const blob = new Blob([`\\uFEFF${content}`], { type: mime });
+        const blob = new Blob([`\uFEFF${content}`], { type: mime });
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = url;

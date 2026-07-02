@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>투석 환자 일정 체크 도우미</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #f7f9f8; color: #16211f; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      button, input, select, textarea { font: inherit; }
+      button { border: 1px solid #cdd8d2; background: #fff; color: #16211f; border-radius: 8px; min-height: 42px; padding: 0 14px; cursor: pointer; }
+      button:hover { border-color: #0f766e; }
+      .primary { background: #0f766e; color: #fff; border-color: #0f766e; font-weight: 700; }
+      .shell { width: min(1180px, calc(100% - 28px)); margin: 0 auto; padding: 24px 0 44px; }
+      .topbar { display: grid; grid-template-columns: 1fr minmax(260px, 360px); gap: 20px; align-items: end; padding: 18px 0 10px; }
+      .eyebrow { margin: 0 0 8px; color: #b45309; font-size: .82rem; font-weight: 800; text-transform: uppercase; }
+      h1, h2, p { margin-top: 0; }
+      h1 { margin-bottom: 10px; font-size: clamp(2rem, 4vw, 3.8rem); line-height: 1.05; }
+      h2 { margin-bottom: 4px; font-size: 1.18rem; }
+      .subtitle { max-width: 720px; color: #51605c; font-size: 1.02rem; line-height: 1.65; }
+      .privacy, .mini-note, .result { border-left: 5px solid #0f766e; background: #e8f7f2; border-radius: 8px; padding: 14px 16px; }
+      .privacy strong, .privacy span { display: block; }
+      .privacy span { margin-top: 6px; color: #38514b; line-height: 1.55; }
+      .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 18px 0; }
+      .metrics article, .panel { border: 1px solid #dbe4df; background: #fff; border-radius: 8px; }
+      .metrics article { padding: 16px; }
+      .metrics span { display: block; color: #61706c; font-size: .9rem; }
+      .metrics strong { display: block; margin-top: 8px; font-size: 1.8rem; }
+      .tabs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px; margin-bottom: 12px; }
+      .tabs button { flex: 0 0 auto; }
+      .tabs .active { background: #16211f; color: #fff; border-color: #16211f; }
+      .workgrid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; }
+      .panel { padding: 18px; }
+      .section-title { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 16px; }
+      .section-title p { color: #61706c; margin-bottom: 0; }
+      form, .side { display: grid; gap: 14px; }
+      label { display: grid; gap: 7px; color: #34423f; font-weight: 700; }
+      input, select, textarea { width: 100%; border: 1px solid #cdd8d2; border-radius: 8px; min-height: 42px; padding: 10px 12px; background: #fff; color: #16211f; }
+      textarea { min-height: 88px; resize: vertical; }
+      .date-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+      .cards { display: grid; gap: 10px; }
+      .event { border: 1px solid #e0e7e3; border-radius: 8px; padding: 14px; background: #fbfcfc; }
+      .event strong, .event span { display: block; }
+      .event span, .event p, .empty { color: #52635e; line-height: 1.55; }
+      .event p { margin: 10px 0 0; }
+      .filters { display: grid; grid-template-columns: 1fr 180px; gap: 10px; margin-bottom: 12px; }
+      .table-wrap { overflow-x: auto; }
+      table { width: 100%; border-collapse: collapse; min-width: 760px; }
+      th, td { border-bottom: 1px solid #e1e8e5; padding: 12px 10px; text-align: left; vertical-align: top; }
+      th { color: #354541; background: #f3f6f5; }
+      @media (max-width: 820px) {
+        .topbar, .workgrid, .metrics, .date-grid, .filters { grid-template-columns: 1fr; }
+        h1 { font-size: 2.2rem; }
+        .section-title { display: block; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+
+      const STORAGE_KEY = "dialysis-schedule-helper.records.v2";
+      const CONFIG_KEY = "dialysis-schedule-helper.supabase";
+      const app = document.querySelector("#app");
+      let records = [];
+      let activeTab = "write";
+      let searchText = "";
+      let statusFilter = "전체";
+      let lastResult = "";
+
+      const fields = [
+        ["newPatientDate", "신환 검사일"],
+        ["oneMonthDate", "1개월 검사일"],
+        ["threeMonthDate", "3개월 검사일"],
+        ["sixMonthDate", "6개월 검사일"],
+        ["prescriptionDate", "이번 처방일"],
+        ["nextPrescriptionDate", "다음 처방일"],
+        ["vascularVisitDate", "혈관외과 방문일"]
+      ];
+
+      const todayIso = () => new Date().toISOString().slice(0, 10);
+      const addDays = (days) => {
+        const date = new Date();
+        date.setDate(date.getDate() + days);
+        return date.toISOString().slice(0, 10);
+      };
+      const escapeHtml = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+      const getConfig = () => JSON.parse(localStorage.getItem(CONFIG_KEY) || "{}");
+      const getSupabase = () => {
+        const config = getConfig();
+        return config.url && config.anonKey ? createClient(config.url, config.anonKey) : null;
+      };
+
+      function sampleRecords() {
+        return [
+          makeRecord({ patientHint: "김OO", ward: "월수금 오전", newPatientDate: todayIso(), oneMonthDate: addDays(7), threeMonthDate: addDays(21), prescriptionDate: todayIso(), nextPrescriptionDate: addDays(28), labNote: "칼륨 재확인 필요 메모", memo: "오전 회진 전 확인" }),
+          makeRecord({ patientHint: "이OO", ward: "화목토 오후", threeMonthDate: addDays(3), sixMonthDate: addDays(40), prescriptionDate: addDays(5), vascularVisitDate: addDays(2), labNote: "Hb 추적 메모", memo: "보호자 설명 여부 확인" }),
+          makeRecord({ patientHint: "박OO", ward: "격일반", oneMonthDate: addDays(-2), nextPrescriptionDate: addDays(14), vascularVisitDate: todayIso(), labNote: "추가 채혈 결과 대기", memo: "확인 후 상태 변경", status: "확인 완료" })
+        ];
+      }
+
+      function makeRecord(values) {
+        const now = new Date().toISOString();
+        return {
+          id: crypto.randomUUID(),
+          title: `${values.patientHint || "환자"} 일정`,
+          patientHint: "",
+          ward: "",
+          newPatientDate: "",
+          oneMonthDate: "",
+          threeMonthDate: "",
+          sixMonthDate: "",
+          prescriptionDate: "",
+          nextPrescriptionDate: "",
+          vascularVisitDate: "",
+          labNote: "",
+          memo: "",
+          status: "확인 전",
+          createdAt: now,
+          updatedAt: now,
+          ...values
+        };
+      }
+
+      async function loadRecords() {
+        const supabase = getSupabase();
+        if (!supabase) {
+          records = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+          return;
+        }
+        const { data, error } = await supabase.from("records").select("*").order("created_at", { ascending: false });
+        if (error || !data) {
+          records = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+          lastResult = "Supabase에서 불러오지 못해 이 브라우저의 저장 목록을 보여줍니다.";
+          return;
+        }
+        records = data.map((row) => ({
+          id: row.id,
+          title: row.title || "",
+          patientHint: row.patient_hint || row.input_text || "",
+          ward: row.category || "",
+          newPatientDate: row.new_patient_date || "",
+          oneMonthDate: row.one_month_date || "",
+          threeMonthDate: row.three_month_date || "",
+          sixMonthDate: row.six_month_date || "",
+          prescriptionDate: row.prescription_date || "",
+          nextPrescriptionDate: row.next_prescription_date || "",
+          vascularVisitDate: row.vascular_visit_date || "",
+          labNote: row.result_text || "",
+          memo: row.memo || "",
+          status: row.status === "확인 완료" ? "확인 완료" : "확인 전",
+          createdAt: row.created_at || new Date().toISOString(),
+          updatedAt: row.updated_at || new Date().toISOString()
+        }));
+      }
+
+      async function persistRecord(record) {
+        records = [record, ...records.filter((item) => item.id !== record.id)];
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+        const supabase = getSupabase();
+        if (!supabase) return;
+        const { error } = await supabase.from("records").upsert({
+          id: record.id,
+          title: record.title,
+          input_text: record.patientHint,
+          result_text: record.labNote,
+          category: record.ward,
+          status: record.status,
+          memo: record.memo,
+          patient_hint: record.patientHint,
+          new_patient_date: record.newPatientDate || null,
+          one_month_date: record.oneMonthDate || null,
+          three_month_date: record.threeMonthDate || null,
+          six_month_date: record.sixMonthDate || null,
+          prescription_date: record.prescriptionDate || null,
+          next_prescription_date: record.nextPrescriptionDate || null,
+          vascular_visit_date: record.vascularVisitDate || null,
+          updated_at: record.updatedAt
+        });
+        if (error) lastResult = "Supabase 저장은 실패했지만, 이 브라우저에는 저장했습니다. SQL 테이블과 RLS 정책을 확인해 주세요.";
+      }
+
+      function getEvents(source = records) {
+        return source.flatMap((record) => fields.filter(([key]) => Boolean(record[key])).map(([key, label]) => ({ record, date: String(record[key]), type: label }))).sort((a, b) => a.date.localeCompare(b.date));
+      }
+      const thisMonth = (event) => event.date.slice(0, 7) === todayIso().slice(0, 7);
+      const upcoming = (event) => event.date >= todayIso() && event.date <= addDays(7);
+      const filteredRecords = () => records.filter((record) => [record.title, record.patientHint, record.ward, record.labNote, record.memo].join(" ").toLowerCase().includes(searchText.toLowerCase()) && (statusFilter === "전체" || record.status === statusFilter));
+
+      function render() {
+        const events = getEvents();
+        const todayEvents = events.filter((event) => event.date === todayIso());
+        const upcomingEvents = events.filter(upcoming);
+        const monthEvents = events.filter(thisMonth);
+        const pendingCount = records.filter((record) => record.status === "확인 전").length;
+        const config = getConfig();
+        app.innerHTML = `
+          <main class="shell">
+            <header class="topbar">
+              <div>
+                <p class="eyebrow">Vercel + Supabase ready</p>
+                <h1>투석 환자 일정 체크 도우미</h1>
+                <p class="subtitle">검사일, 처방일, 혈관외과 방문일과 확인 메모를 한 화면에서 입력하고 다시 찾는 일정 체크 앱입니다.</p>
+              </div>
+              <div class="privacy"><strong>개인정보 보호</strong><span>실명, 주민번호, 연락처, 자세한 진단명은 넣지 말고 병원 내부 기준에 맞는 최소 식별 정보만 입력하세요.</span></div>
+            </header>
+            <section class="metrics" aria-label="요약">
+              <article><span>등록 일정</span><strong>${records.length}건</strong></article>
+              <article><span>오늘 확인</span><strong>${todayEvents.length}건</strong></article>
+              <article><span>이번 달 일정</span><strong>${monthEvents.length}건</strong></article>
+              <article><span>확인 전</span><strong>${pendingCount}건</strong></article>
+            </section>
+            <nav class="tabs" aria-label="보기 선택">
+              ${tabButton("write", "입력")}${tabButton("today", "오늘")}${tabButton("upcoming", "가까운 일정")}${tabButton("month", "이번 달")}${tabButton("all", "전체 목록")}${tabButton("settings", "연결 설정")}
+            </nav>
+            ${lastResult ? `<p class="result">${escapeHtml(lastResult)}</p>` : ""}
+            ${activeTab === "write" ? renderWriteView(config) : ""}
+            ${activeTab === "today" ? renderEventList("오늘 확인할 일정", todayEvents, "오늘 날짜와 일치하는 일정이 없습니다.") : ""}
+            ${activeTab === "upcoming" ? renderEventList("7일 안의 가까운 일정", upcomingEvents, "앞으로 7일 안에 표시할 일정이 없습니다.") : ""}
+            ${activeTab === "month" ? renderEventList("이번 달 전체 일정", monthEvents, "이번 달에 해당하는 일정이 없습니다.") : ""}
+            ${activeTab === "all" ? renderAllView(events) : ""}
+            ${activeTab === "settings" ? renderSettings(config) : ""}
+          </main>`;
+        bindEvents();
+      }
+
+      const tabButton = (id, label) => `<button class="${activeTab === id ? "active" : ""}" data-tab="${id}" type="button">${label}</button>`;
+      const renderWriteView = (config) => `
+        <section class="workgrid">
+          <form class="panel" id="schedule-form">
+            <div class="section-title"><h2>일정 입력</h2><p>날짜는 하나 이상 입력해야 저장됩니다.</p></div>
+            <label>환자 식별 정보<input name="patientHint" placeholder="예: 김OO, 3병동 A-12" required /></label>
+            <label>병동 또는 구분<input name="ward" placeholder="예: 월수금 오전, 5병동" /></label>
+            <div class="date-grid">${fields.map(([key, label]) => `<label>${label}<input name="${key}" type="date" /></label>`).join("")}</div>
+            <label>혈액검사 특이 소견<textarea name="labNote" placeholder="판단이나 진단 대신 확인해야 할 메모만 적어 주세요."></textarea></label>
+            <label>비고<textarea name="memo" placeholder="예: 회진 전 확인, 보호자 설명 여부"></textarea></label>
+            <label>확인 상태<select name="status"><option>확인 전</option><option>확인 완료</option></select></label>
+            <button class="primary" type="submit">결과 생성 및 저장</button>
+          </form>
+          <aside class="panel side">
+            <div class="section-title"><h2>도구</h2><p>샘플과 내려받기</p></div>
+            <button type="button" data-action="sample">샘플 데이터 넣기</button>
+            <button type="button" data-action="downloadCsv">CSV 다운로드</button>
+            <button type="button" data-action="downloadTxt">TXT 요약 다운로드</button>
+            <button type="button" data-action="clear">화면 목록 비우기</button>
+            <div class="mini-note">${config.url && config.anonKey ? "Supabase 연결 정보가 있어 원격 저장을 시도합니다." : "아직 Supabase 연결 정보가 없어 이 브라우저에 저장합니다."}</div>
+          </aside>
+        </section>`;
+      const renderSettings = (config) => `
+        <form class="panel" id="settings-form">
+          <div class="section-title"><h2>Supabase 연결 설정</h2><p>Project URL과 anon public key만 입력하세요.</p></div>
+          <label>Project URL<input name="url" value="${escapeHtml(config.url || "")}" placeholder="https://xxxx.supabase.co" /></label>
+          <label>anon public key<textarea name="anonKey" placeholder="service role key는 넣지 마세요.">${escapeHtml(config.anonKey || "")}</textarea></label>
+          <button class="primary" type="submit">연결 정보 저장</button>
+        </form>`;
+      const renderEventList = (title, items, empty) => `<section class="panel"><div class="section-title"><h2>${title}</h2><p>${items.length}건</p></div><div class="cards">${items.length ? items.map(renderEventCard).join("") : `<p class="empty">${empty}</p>`}</div></section>`;
+      const renderEventCard = (event) => `<article class="event"><div><strong>${escapeHtml(event.date)} · ${escapeHtml(event.type)}</strong><span>${escapeHtml(event.record.patientHint)} / ${escapeHtml(event.record.ward || "-")} / ${escapeHtml(event.record.status)}</span></div><p>특이 소견: ${escapeHtml(event.record.labNote || "-")} · 비고: ${escapeHtml(event.record.memo || "-")}</p></article>`;
+      function renderAllView(events) {
+        const visible = filteredRecords();
+        return `<section class="panel"><div class="section-title"><h2>저장된 기록</h2><p>${visible.length}건 표시</p></div><div class="filters"><input id="search" placeholder="환자 식별 정보, 병동, 메모 검색" value="${escapeHtml(searchText)}" /><select id="status-filter"><option ${statusFilter === "전체" ? "selected" : ""}>전체</option><option ${statusFilter === "확인 전" ? "selected" : ""}>확인 전</option><option ${statusFilter === "확인 완료" ? "selected" : ""}>확인 완료</option></select></div><div class="table-wrap"><table><thead><tr><th>환자</th><th>구분</th><th>상태</th><th>다가오는 일정</th><th>메모</th></tr></thead><tbody>${visible.length ? visible.map((record) => { const next = events.find((event) => event.record.id === record.id && event.date >= todayIso()); return `<tr><td>${escapeHtml(record.patientHint)}</td><td>${escapeHtml(record.ward || "-")}</td><td>${escapeHtml(record.status)}</td><td>${next ? `${escapeHtml(next.date)} ${escapeHtml(next.type)}` : "-"}</td><td>${escapeHtml(record.memo || "-")}</td></tr>`; }).join("") : `<tr><td colspan="5">표시할 일정이 없습니다.</td></tr>`}</tbody></table></div></section>`;
+      }
+
+      function bindEvents() {
+        document.querySelectorAll("[data-tab]").forEach((button) => button.addEventListener("click", () => { activeTab = button.dataset.tab || "write"; lastResult = ""; render(); }));
+        document.querySelector("#schedule-form")?.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const form = new FormData(event.currentTarget);
+          const patientHint = String(form.get("patientHint") || "").trim();
+          const hasDate = fields.some(([key]) => Boolean(form.get(key)));
+          if (!patientHint || !hasDate) { lastResult = "환자 식별 정보와 날짜 하나 이상을 입력해 주세요."; render(); return; }
+          const record = makeRecord({
+            patientHint,
+            ward: String(form.get("ward") || "").trim(),
+            newPatientDate: String(form.get("newPatientDate") || ""),
+            oneMonthDate: String(form.get("oneMonthDate") || ""),
+            threeMonthDate: String(form.get("threeMonthDate") || ""),
+            sixMonthDate: String(form.get("sixMonthDate") || ""),
+            prescriptionDate: String(form.get("prescriptionDate") || ""),
+            nextPrescriptionDate: String(form.get("nextPrescriptionDate") || ""),
+            vascularVisitDate: String(form.get("vascularVisitDate") || ""),
+            labNote: String(form.get("labNote") || "").trim(),
+            memo: String(form.get("memo") || "").trim(),
+            status: String(form.get("status")) === "확인 완료" ? "확인 완료" : "확인 전"
+          });
+          await persistRecord(record);
+          lastResult = `${record.patientHint} 일정이 저장됐습니다.`;
+          render();
+        });
+        document.querySelector("#settings-form")?.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const form = new FormData(event.currentTarget);
+          localStorage.setItem(CONFIG_KEY, JSON.stringify({ url: String(form.get("url") || "").trim(), anonKey: String(form.get("anonKey") || "").trim() }));
+          lastResult = "Supabase 연결 정보를 저장했습니다.";
+          await loadRecords();
+          render();
+        });
+        document.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => handleAction(button.dataset.action || "")));
+        document.querySelector("#search")?.addEventListener("input", (event) => { searchText = event.currentTarget.value; render(); });
+        document.querySelector("#status-filter")?.addEventListener("change", (event) => { statusFilter = event.currentTarget.value; render(); });
+      }
+
+      function handleAction(action) {
+        if (action === "sample") { records = [...sampleRecords(), ...records]; localStorage.setItem(STORAGE_KEY, JSON.stringify(records)); lastResult = "샘플 데이터 3건을 넣었습니다."; }
+        if (action === "clear") { records = []; localStorage.setItem(STORAGE_KEY, JSON.stringify(records)); lastResult = "이 브라우저의 화면 목록을 비웠습니다."; }
+        if (action === "downloadCsv") download("dialysis_schedule.csv", toCsv(records), "text/csv;charset=utf-8");
+        if (action === "downloadTxt") download("dialysis_schedule_summary.txt", toTextSummary(getEvents()), "text/plain;charset=utf-8");
+        render();
+      }
+      function toCsv(source) {
+        const header = ["환자 식별 정보", "병동/구분", "신환", "1개월", "3개월", "6개월", "이번 처방", "다음 처방", "혈관외과", "특이 소견", "비고", "상태"];
+        const rows = source.map((record) => [record.patientHint, record.ward, record.newPatientDate, record.oneMonthDate, record.threeMonthDate, record.sixMonthDate, record.prescriptionDate, record.nextPrescriptionDate, record.vascularVisitDate, record.labNote, record.memo, record.status]);
+        return [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\\n");
+      }
+      function toTextSummary(events) {
+        if (!events.length) return "등록된 일정이 없습니다.";
+        return [`투석 환자 일정 체크 도우미 요약`, `생성일: ${todayIso()}`, ""].concat(events.map((event) => `- ${event.date} | ${event.record.patientHint} | ${event.type} | ${event.record.ward || "-"} | ${event.record.status} | ${event.record.memo || "-"}`)).join("\\n");
+      }
+      function download(filename, content, mime) {
+        const blob = new Blob([`\\uFEFF${content}`], { type: mime });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        link.click();
+        URL.revokeObjectURL(url);
+      }
+
+      await loadRecords();
+      render();
+    </script>
+  </body>
+</html>

@@ -62,6 +62,10 @@
 
       const STORAGE_KEY = "dialysis-schedule-helper.records.v2";
       const CONFIG_KEY = "dialysis-schedule-helper.supabase";
+      const DEFAULT_SUPABASE_CONFIG = {
+        url: "https://buvpknewbwfnuopdsbtv.supabase.co",
+        anonKey: "sb_publishable_o_qw70ul6Y1zRmV7sva4Gw_d5hMyfXq"
+      };
       const app = document.querySelector("#app");
       let records = [];
       let activeTab = "write";
@@ -86,7 +90,7 @@
         return date.toISOString().slice(0, 10);
       };
       const escapeHtml = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
-      const getConfig = () => JSON.parse(localStorage.getItem(CONFIG_KEY) || "{}");
+      const getConfig = () => ({ ...DEFAULT_SUPABASE_CONFIG, ...JSON.parse(localStorage.getItem(CONFIG_KEY) || "{}") });
       const getSupabase = () => {
         const config = getConfig();
         return config.url && config.anonKey ? createClient(config.url, config.anonKey) : null;

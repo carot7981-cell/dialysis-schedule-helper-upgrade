@@ -366,9 +366,11 @@
         const name = file.name.toLowerCase();
         if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
           const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
-          const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-          const rows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, raw: true, defval: "" });
-          return rowsToRecords(rows);
+          return workbook.SheetNames.flatMap((sheetName) => {
+            const sheet = workbook.Sheets[sheetName];
+            const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: "" });
+            return rowsToRecords(rows, sheetName);
+          });
         }
         const cleanText = (await file.text()).replace(/\t/g, ",");
         return csvToRecords(cleanText);
@@ -376,11 +378,13 @@
       function csvToRecords(text) {
         const cleanText = text.charCodeAt(0) === 65279 ? text.slice(1) : text;
         const rows = parseCsv(cleanText).filter((row) => row.some((cell) => cell.trim()));
-        return rowsToRecords(rows);
+        return rowsToRecords(rows, "업로드");
       }
-      function rowsToRecords(rows) {
+      function rowsToRecords(rows, sourceName = "업로드") {
         if (rows.length < 2) return [];
-        const header = rows[0].map(normalizeHeader);
+        const headerIndex = findHeaderRow(rows);
+        const originalHeader = rows[headerIndex].map((cell, index) => String(cell || `열${index + 1}`).trim() || `열${index + 1}`);
+        const header = originalHeader.map(normalizeHeader);
         const indexOf = (...names) => names.map((name) => header.indexOf(normalizeHeader(name))).find((index) => index >= 0);
         const indexes = {
           patientHint: indexOf("환자 식별 정보", "환자", "환자식별정보"),
@@ -396,13 +400,28 @@
           memo: indexOf("비고", "메모"),
           status: indexOf("상태", "확인 상태")
         };
+        const knownIndexes = new Set(Object.values(indexes).filter((index) => index !== undefined));
         const pickRaw = (row, key) => indexes[key] === undefined ? "" : row[indexes[key]];
         const pickText = (row, key) => String(pickRaw(row, key) || "").trim();
-        return rows.slice(1).map((row) => {
-          const patientHint = pickText(row, "patientHint");
+        let lastPatientHint = "";
+        let lastWard = "";
+        return rows.slice(headerIndex + 1).map((row, offset) => {
+          const rowHasContent = row.some((cell) => String(cell || "").trim());
+          if (!rowHasContent) return null;
+          const rowNumber = headerIndex + offset + 2;
+          const rawPatientHint = pickText(row, "patientHint");
+          const rawWard = pickText(row, "ward");
+          if (rawPatientHint) lastPatientHint = rawPatientHint;
+          if (rawWard) lastWard = rawWard;
+          const extraMemo = row.map((cell, index) => ({ label: originalHeader[index] || `열${index + 1}`, value: String(cell || "").trim(), index }))
+            .filter((item) => item.value && !knownIndexes.has(item.index))
+            .map((item) => `${item.label}: ${item.value}`)
+            .join(" / ");
+          const baseMemo = pickText(row, "memo");
+          const patientHint = rawPatientHint || lastPatientHint || `${sourceName} ${rowNumber}행`;
           const values = {
             patientHint,
-            ward: pickText(row, "ward"),
+            ward: rawWard || lastWard,
             newPatientDate: normalizeDate(pickRaw(row, "newPatientDate")),
             oneMonthDate: normalizeDate(pickRaw(row, "oneMonthDate")),
             threeMonthDate: normalizeDate(pickRaw(row, "threeMonthDate")),
@@ -411,11 +430,21 @@
             nextPrescriptionDate: normalizeDate(pickRaw(row, "nextPrescriptionDate")),
             vascularVisitDate: normalizeDate(pickRaw(row, "vascularVisitDate")),
             labNote: pickText(row, "labNote"),
-            memo: pickText(row, "memo"),
+            memo: [baseMemo, extraMemo ? `추가 내용: ${extraMemo}` : ""].filter(Boolean).join(" / "),
             status: pickText(row, "status") === "확인 완료" ? "확인 완료" : "확인 전"
           };
-          return patientHint && fields.some(([key]) => values[key]) ? makeRecord(values) : null;
+          return makeRecord(values);
         }).filter(Boolean);
+      }
+      function findHeaderRow(rows) {
+        const scoreRow = (row) => row.map(normalizeHeader).filter((cell) => ["환자식별정보", "환자", "병동/구분", "병동", "신환", "신환검사일", "1개월", "3개월", "6개월", "이번처방", "다음처방", "혈관외과", "비고", "메모", "상태"].includes(cell)).length;
+        let bestIndex = 0;
+        let bestScore = 0;
+        rows.slice(0, 12).forEach((row, index) => {
+          const score = scoreRow(row);
+          if (score > bestScore) { bestScore = score; bestIndex = index; }
+        });
+        return bestIndex;
       }
       function parseCsv(text) {
         const rows = [];

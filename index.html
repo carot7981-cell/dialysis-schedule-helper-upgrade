@@ -84,12 +84,16 @@
 
       const STORAGE_KEY = "dialysis-schedule-helper.records.v2";
       const CONFIG_KEY = "dialysis-schedule-helper.supabase";
+      const USER_SESSION_KEY = "dialysis-schedule-helper.user";
+      const AUTH_CATEGORY = "__app_user__";
       const DEFAULT_SUPABASE_CONFIG = {
         url: "https://buvpknewbwfnuopdsbtv.supabase.co",
         anonKey: "sb_publishable_o_qw70ul6Y1zRmV7sva4Gw_d5hMyfXq"
       };
       const app = document.querySelector("#app");
       let records = [];
+      let authUsers = [];
+      let currentUser = null;
       let activeTab = "write";
       let searchText = "";
       let lastResult = "";
@@ -178,15 +182,18 @@
         const supabase = getSupabase();
         if (!supabase) {
           records = dedupeRecords(JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"));
+          syncCurrentUser();
           return;
         }
         const { data, error } = await supabase.from("records").select("*").order("created_at", { ascending: false });
         if (error || !data) {
           records = dedupeRecords(JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"));
           lastResult = "Supabase에서 불러오지 못해 이 브라우저의 저장 목록을 보여줍니다.";
+          syncCurrentUser();
           return;
         }
-        records = dedupeRecords(data.map((row) => ({
+        authUsers = data.filter((row) => row.category === AUTH_CATEGORY).map(rowToAuthUser);
+        records = dedupeRecords(data.filter((row) => row.category !== AUTH_CATEGORY).map((row) => ({
           id: row.id,
           title: row.title || "",
           patientHint: row.patient_hint || row.input_text || "",
@@ -204,6 +211,49 @@
           createdAt: row.created_at || new Date().toISOString(),
           updatedAt: row.updated_at || new Date().toISOString()
         })));
+        syncCurrentUser();
+      }
+
+      const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
+      const hasApprovedAdmin = () => authUsers.some((user) => user.role === "admin" && user.status === "approved");
+      function rowToAuthUser(row) {
+        let meta = {};
+        try { meta = JSON.parse(row.memo || "{}"); } catch (_error) { meta = {}; }
+        return {
+          id: row.id,
+          name: meta.name || row.title || "",
+          email: normalizeEmail(row.input_text || row.patient_hint || ""),
+          role: meta.role === "admin" ? "admin" : "member",
+          status: row.status === "approved" ? "approved" : row.status === "rejected" ? "rejected" : "pending",
+          createdAt: row.created_at || "",
+          updatedAt: row.updated_at || ""
+        };
+      }
+      function syncCurrentUser() {
+        const saved = JSON.parse(localStorage.getItem(USER_SESSION_KEY) || "null");
+        if (!saved?.email) { currentUser = null; return; }
+        currentUser = authUsers.find((user) => user.email === normalizeEmail(saved.email)) || saved;
+      }
+      async function saveAuthUser(user, setSession = true) {
+        const normalized = { ...user, email: normalizeEmail(user.email), updatedAt: new Date().toISOString() };
+        authUsers = [normalized, ...authUsers.filter((item) => item.email !== normalized.email)];
+        if (setSession) {
+          localStorage.setItem(USER_SESSION_KEY, JSON.stringify({ email: normalized.email, name: normalized.name }));
+          currentUser = normalized;
+        }
+        const supabase = getSupabase();
+        if (!supabase) return true;
+        const { error } = await supabase.from("records").upsert({
+          id: normalized.id,
+          title: normalized.name,
+          input_text: normalized.email,
+          patient_hint: normalized.email,
+          category: AUTH_CATEGORY,
+          status: normalized.status,
+          memo: JSON.stringify({ name: normalized.name, role: normalized.role }),
+          updated_at: normalized.updatedAt
+        });
+        return !error;
       }
 
       async function persistRecord(record) {
@@ -241,6 +291,10 @@
       const filteredRecords = () => records.filter((record) => [record.title, record.patientHint, record.ward, record.labNote, record.memo].join(" ").toLowerCase().includes(searchText.toLowerCase()));
 
       function render() {
+        if (!currentUser || currentUser.status !== "approved") {
+          renderAuthView();
+          return;
+        }
         const events = getEvents();
         const todayEvents = events.filter((event) => event.date === todayIso());
         const upcomingEvents = events.filter(upcoming);
@@ -263,7 +317,7 @@
               <article><span>가까운 일정</span><strong>${upcomingEvents.length}건</strong></article>
             </section>
             <nav class="tabs" aria-label="보기 선택">
-              ${tabButton("write", "입력")}${tabButton("today", "오늘")}${tabButton("upcoming", "가까운 일정")}${tabButton("month", "이번 달")}${tabButton("all", "전체 목록")}${tabButton("settings", "연결 설정")}
+              ${tabButton("write", "입력")}${tabButton("today", "오늘")}${tabButton("upcoming", "가까운 일정")}${tabButton("month", "이번 달")}${tabButton("all", "전체 목록")}${currentUser.role === "admin" ? tabButton("admin", "승인 관리") : ""}${tabButton("settings", "연결 설정")}
             </nav>
             ${lastResult ? `<p class="result">${escapeHtml(lastResult)}</p>` : ""}
             ${activeTab === "write" ? renderWriteView(config) : ""}
@@ -271,9 +325,40 @@
             ${activeTab === "upcoming" ? renderEventList("7일 안의 가까운 일정", upcomingEvents, "앞으로 7일 안에 표시할 일정이 없습니다.") : ""}
             ${activeTab === "month" ? renderEventList("이번 달 전체 일정", monthEvents, "이번 달에 해당하는 일정이 없습니다.") : ""}
             ${activeTab === "all" ? renderAllView(events) : ""}
+            ${activeTab === "admin" && currentUser.role === "admin" ? renderAdminView() : ""}
             ${activeTab === "settings" ? renderSettings(config) : ""}
           </main>`;
         bindEvents();
+      }
+
+      function renderAuthView() {
+        const adminReady = hasApprovedAdmin();
+        const saved = JSON.parse(localStorage.getItem(USER_SESSION_KEY) || "null");
+        const waiting = currentUser?.status === "pending";
+        const rejected = currentUser?.status === "rejected";
+        app.innerHTML = `
+          <main class="shell">
+            <header class="topbar">
+              <div>
+                <p class="eyebrow">${adminReady ? "Member access" : "Admin setup"}</p>
+                <h1>투석 환자 일정 체크 도우미</h1>
+                <p class="subtitle">${adminReady ? "승인된 사용자만 일정 앱을 열 수 있습니다." : "처음 등록하는 사용자가 승인 관리자가 됩니다. 공유하기 전에 본인 이름과 이메일로 먼저 등록하세요."}</p>
+              </div>
+              <div class="privacy"><strong>접근 관리</strong><span>이름과 이메일로 신청하고, 승인 관리자가 허용한 사용자만 앱 화면에 들어갑니다.</span></div>
+            </header>
+            ${lastResult ? `<p class="result">${escapeHtml(lastResult)}</p>` : ""}
+            ${waiting ? `<p class="result">승인 대기 중입니다. 관리자 승인 후 다시 로그인해 주세요.</p>` : ""}
+            ${rejected ? `<p class="result">승인이 보류된 계정입니다. 관리자에게 문의해 주세요.</p>` : ""}
+            <section class="panel">
+              <div class="section-title"><h2>${adminReady ? "로그인 / 회원가입" : "관리자 등록"}</h2><p>이름과 이메일을 입력하세요.</p></div>
+              <form id="auth-form">
+                <label>이름<input name="name" value="${escapeHtml(saved?.name || currentUser?.name || "")}" required /></label>
+                <label>이메일<input name="email" type="email" value="${escapeHtml(saved?.email || currentUser?.email || "")}" required /></label>
+                <button class="primary" type="submit">${adminReady ? "들어가기" : "관리자로 시작"}</button>
+              </form>
+            </section>
+          </main>`;
+        bindAuthEvents();
       }
 
       const tabButton = (id, label) => `<button class="${activeTab === id ? "active" : ""}" data-tab="${id}" type="button">${label}</button>`;
@@ -305,6 +390,10 @@
           <label>anon public key<textarea name="anonKey" placeholder="service role key는 넣지 마세요.">${escapeHtml(config.anonKey || "")}</textarea></label>
           <button class="primary" type="submit">연결 정보 저장</button>
         </form>`;
+      function renderAdminView() {
+        const users = authUsers.filter((user) => user.email !== currentUser.email);
+        return `<section class="panel"><div class="section-title"><h2>승인 관리</h2><p>${users.length}명</p></div><div class="table-wrap"><table><thead><tr><th>이름</th><th>이메일</th><th>상태</th><th>권한</th><th>처리</th></tr></thead><tbody>${users.length ? users.map((user) => `<tr><td>${escapeHtml(user.name || "-")}</td><td>${escapeHtml(user.email)}</td><td>${escapeHtml(user.status === "approved" ? "승인됨" : user.status === "rejected" ? "보류" : "대기")}</td><td>${escapeHtml(user.role === "admin" ? "관리자" : "사용자")}</td><td><button type="button" data-user-action="approve" data-email="${escapeHtml(user.email)}">승인</button> <button type="button" data-user-action="reject" data-email="${escapeHtml(user.email)}">보류</button></td></tr>`).join("") : `<tr><td colspan="5">승인할 사용자가 없습니다.</td></tr>`}</tbody></table></div></section>`;
+      }
       const renderEventList = (title, items, empty) => `<section class="panel"><div class="section-title"><h2>${title}</h2><p>${items.length}건</p></div><div class="cards">${items.length ? items.map(renderEventCard).join("") : `<p class="empty">${empty}</p>`}</div></section>`;
       const renderEventCard = (event) => `<article class="event"><div><strong>${escapeHtml(event.date)} · ${escapeHtml(event.type)}</strong><span>${escapeHtml(event.record.patientHint)} / ${escapeHtml(event.record.ward || "-")}</span></div><p>특이 소견: ${escapeHtml(cleanDisplayText(event.record.labNote || "-"))} · 비고: ${escapeHtml(cleanDisplayText(event.record.memo || "-"))}</p></article>`;
       function renderAllView(events) {
@@ -347,8 +436,47 @@
           render();
         });
         document.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => handleAction(button.dataset.action || "")));
+        document.querySelectorAll("[data-user-action]").forEach((button) => button.addEventListener("click", () => handleUserAction(button.dataset.userAction || "", button.dataset.email || "")));
         document.querySelector("#csv-upload")?.addEventListener("change", handleCsvUpload);
         document.querySelector("#search")?.addEventListener("input", (event) => { searchText = event.currentTarget.value; render(); });
+      }
+
+      function bindAuthEvents() {
+        document.querySelector("#auth-form")?.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const form = new FormData(event.currentTarget);
+          const name = String(form.get("name") || "").trim();
+          const email = normalizeEmail(form.get("email"));
+          if (!name || !email) { lastResult = "이름과 이메일을 입력해 주세요."; renderAuthView(); return; }
+          const existing = authUsers.find((user) => user.email === email);
+          const firstAdmin = !hasApprovedAdmin();
+          if (existing) {
+            const updated = { ...existing, name: existing.name || name };
+            localStorage.setItem(USER_SESSION_KEY, JSON.stringify({ email: updated.email, name: updated.name }));
+            currentUser = updated;
+            lastResult = updated.status === "approved" ? "로그인되었습니다." : "승인 대기 중입니다.";
+            render();
+            return;
+          }
+          const user = { id: crypto.randomUUID(), name, email, role: firstAdmin ? "admin" : "member", status: firstAdmin ? "approved" : "pending" };
+          const ok = await saveAuthUser(user);
+          lastResult = firstAdmin ? "관리자로 등록되었습니다." : ok ? "회원가입 신청이 접수되었습니다. 관리자 승인을 기다려 주세요." : "신청 저장 중 문제가 생겼습니다.";
+          render();
+        });
+      }
+
+      async function handleUserAction(action, email) {
+        if (currentUser?.role !== "admin") return;
+        const target = authUsers.find((user) => user.email === normalizeEmail(email));
+        if (!target) return;
+        const updated = { ...target, status: action === "approve" ? "approved" : "rejected" };
+        const ok = await saveAuthUser(updated, false);
+        currentUser = authUsers.find((user) => user.email === currentUser.email) || currentUser;
+        activeTab = "admin";
+        lastResult = ok ? `${updated.name || updated.email} 처리 완료` : "승인 처리 중 문제가 생겼습니다.";
+        await loadRecords();
+        activeTab = "admin";
+        render();
       }
 
       function handleAction(action) {

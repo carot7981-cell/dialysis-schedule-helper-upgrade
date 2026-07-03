@@ -286,6 +286,730 @@
       function getEvents(source = records) {
         return source.flatMap((record) => fields.filter(([key]) => Boolean(record[key])).map(([key, label]) => ({ record, date: String(record[key]), type: label }))).sort((a, b) => a.date.localeCompare(b.date));
       }
+      const filteredRecords = () => records.filter((record) => [record.title, record.patientHint, record.ward, record.labNote, record.memo].join(" ").toLowerCase().includes(searchText.toLowerCase()));
+      const patientGroups = () => {
+        const groups = new Map();
+        filteredRecords().forEach((record) => {
+          const key = record.patientHint || "이름 없음";
+          groups.set(key, [...(groups.get(key) || []), record]);
+        });
+        return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0], "ko"));
+      };
+
+      function render() {
+        if (!currentUser || currentUser.status !== "approved") {
+          renderAuthView();
+          return;
+        }
+        const events = getEvents();
+        const todayEvents = events.filter((event) => event.date === todayIso());
+        const patientCount = new Set(records.map((record) => record.patientHint).filter(Boolean)).size;
+        const config = getConfig();
+        app.innerHTML = `
+          <main class="shell">
+            <header class="topbar">
+              <div>
+                <p class="eyebrow">Vercel + Supabase ready</p>
+                <h1>투석 환자 일정 체크 도우미</h1>
+                <p class="subtitle">검사일, 처방일, 혈관외과 방문일과 확인 메모를 한 화면에서 입력하고 다시 찾는 일정 체크 앱입니다.</p>
+              </div>
+              <div class="privacy"><strong>개인정보 보호</strong><span>실명, 주민번호, 연락처, 자세한 진단명은 넣지 말고 병원 내부 기준에 맞는 최소 식별 정보만 입력하세요.</span></div>
+            </header>
+            <section class="metrics" aria-label="요약">
+              <article><span>등록 일정</span><strong>${records.length}건</strong></article>
+              <article><span>오늘 확인</span><strong>${todayEvents.length}건</strong></article>
+              <article><span>등록 환자</span><strong>${patientCount}명</strong></article>
+              <article><span>전체 일정</span><strong>${events.length}건</strong></article>
+            </section>
+            <nav class="tabs" aria-label="보기 선택">
+              ${tabButton("write", "입력")}${tabButton("today", "오늘")}${tabButton("all", "전체 목록")}${tabButton("patients", "환자별 보기")}${currentUser.role === "admin" ? tabButton("admin", "승인 관리") : ""}${tabButton("settings", "연결 설정")}
+            </nav>
+            ${lastResult ? `<p class="result">${escapeHtml(lastResult)}</p>` : ""}
+            ${activeTab === "write" ? renderWriteView(config) : ""}
+            ${activeTab === "today" ? renderEventList("오늘 확인할 일정", todayEvents, "오늘 날짜와 일치하는 일정이 없습니다.") : ""}
+            ${activeTab === "all" ? renderAllView(events) : ""}
+            ${activeTab === "patients" ? renderPatientView() : ""}
+            ${activeTab === "admin" && currentUser.role === "admin" ? renderAdminView() : ""}
+            ${activeTab === "settings" ? renderSettings(config) : ""}
+          </main>`;
+        bindEvents();
+      }
+
+      function renderAuthView() {
+        const adminReady = hasApprovedAdmin();
+        const saved = JSON.parse(localStorage.getItem(USER_SESSION_KEY) || "null");
+        const waiting = currentUser?.status === "pending";
+        const rejected = currentUser?.status === "rejected";
+        app.innerHTML = `
+          <main class="shell">
+            <header class="topbar">
+              <div>
+                <p class="eyebrow">${adminReady ? "Member access" : "Admin setup"}</p>
+                <h1>투석 환자 일정 체크 도우미</h1>
+                <p class="subtitle">${adminReady ? "승인된 사용자만 일정 앱을 열 수 있습니다." : "처음 등록하는 사용자가 승인 관리자가 됩니다. 공유하기 전에 본인 이름과 이메일로 먼저 등록하세요."}</p>
+              </div>
+              <div class="privacy"><strong>접근 관리</strong><span>이름과 이메일로 신청하고, 승인 관리자가 허용한 사용자만 앱 화면에 들어갑니다.</span></div>
+            </header>
+            ${lastResult ? `<p class="result">${escapeHtml(lastResult)}</p>` : ""}
+            ${waiting ? `<p class="result">승인 대기 중입니다. 관리자 승인 후 다시 로그인해 주세요.</p>` : ""}
+            ${rejected ? `<p class="result">승인이 보류된 계정입니다. 관리자에게 문의해 주세요.</p>` : ""}
+            <section class="panel">
+              <div class="section-title"><h2>${adminReady ? "로그인 / 회원가입" : "관리자 등록"}</h2><p>이름과 이메일을 입력하세요.</p></div>
+              <form id="auth-form">
+                <label>이름<input name="name" value="${escapeHtml(saved?.name || currentUser?.name || "")}" required /></label>
+                <label>이메일<input name="email" type="email" value="${escapeHtml(saved?.email || currentUser?.email || "")}" required /></label>
+                <button class="primary" type="submit">${adminReady ? "들어가기" : "관리자로 시작"}</button>
+              </form>
+            </section>
+          </main>`;
+        bindAuthEvents();
+      }
+
+      const tabButton = (id, label) => `<button class="${activeTab === id ? "active" : ""}" data-tab="${id}" type="button">${label}</button>`;
+      const renderWriteView = (config) => `
+        <section class="workgrid">
+          <form class="panel" id="schedule-form">
+            <div class="section-title"><h2>일정 입력</h2><p>날짜는 하나 이상 입력해야 저장됩니다.</p></div>
+            <label>환자 식별 정보<input name="patientHint" placeholder="예: 김OO, 3병동 A-12" required /></label>
+            <label>병동 또는 구분<input name="ward" placeholder="예: 월수금 오전, 5병동" /></label>
+            <div class="date-grid">${fields.map(([key, label]) => `<label>${label}<input name="${key}" type="date" /></label>`).join("")}</div>
+            <label>혈액검사 특이 소견<textarea name="labNote" placeholder="판단이나 진단 대신 확인해야 할 메모만 적어 주세요."></textarea></label>
+            <label>비고<textarea name="memo" placeholder="예: 회진 전 확인, 보호자 설명 여부"></textarea></label>
+            <button class="primary" type="submit">결과 생성 및 저장</button>
+          </form>
+          <aside class="panel side">
+            <div class="section-title"><h2>도구</h2><p>샘플, 업로드, 내려받기</p></div>
+            <button type="button" data-action="sample">샘플 데이터 넣기</button>
+            <label>파일 업로드<input id="csv-upload" type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,text/csv,text/tab-separated-values,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" /></label>
+            <button type="button" data-action="downloadCsv">CSV 다운로드</button>
+            <button type="button" data-action="downloadTxt">TXT 요약 다운로드</button>
+            <button type="button" data-action="clear">화면 목록 비우기</button>
+            <div class="mini-note">${config.url && config.anonKey ? "Supabase 연결 정보가 있어 원격 저장을 시도합니다." : "아직 Supabase 연결 정보가 없어 이 브라우저에 저장합니다."}</div>
+          </aside>
+        </section>`;
+      const renderSettings = (config) => `
+        <form class="panel" id="settings-form">
+          <div class="section-title"><h2>Supabase 연결 설정</h2><p>Project URL과 anon public key만 입력하세요.</p></div>
+          <label>Project URL<input name="url" value="${escapeHtml(config.url || "")}" placeholder="https://xxxx.supabase.co" /></label>
+          <label>anon public key<textarea name="anonKey" placeholder="service role key는 넣지 마세요.">${escapeHtml(config.anonKey || "")}</textarea></label>
+          <button class="primary" type="submit">연결 정보 저장</button>
+        </form>`;
+      function renderAdminView() {
+        const users = authUsers.filter((user) => user.email !== currentUser.email);
+        return `<section class="panel"><div class="section-title"><h2>승인 관리</h2><p>${users.length}명</p></div><div class="table-wrap"><table><thead><tr><th>이름</th><th>이메일</th><th>상태</th><th>권한</th><th>처리</th></tr></thead><tbody>${users.length ? users.map((user) => `<tr><td>${escapeHtml(user.name || "-")}</td><td>${escapeHtml(user.email)}</td><td>${escapeHtml(user.status === "approved" ? "승인됨" : user.status === "rejected" ? "보류" : "대기")}</td><td>${escapeHtml(user.role === "admin" ? "관리자" : "사용자")}</td><td><button type="button" data-user-action="approve" data-email="${escapeHtml(user.email)}">승인</button> <button type="button" data-user-action="reject" data-email="${escapeHtml(user.email)}">보류</button></td></tr>`).join("") : `<tr><td colspan="5">승인할 사용자가 없습니다.</td></tr>`}</tbody></table></div></section>`;
+      }
+      const renderEventList = (title, items, empty) => `<section class="panel"><div class="section-title"><h2>${title}</h2><p>${items.length}건</p></div><div class="cards">${items.length ? items.map(renderEventCard).join("") : `<p class="empty">${empty}</p>`}</div></section>`;
+      const renderEventCard = (event) => `<article class="event"><div><strong>${escapeHtml(event.date)} · ${escapeHtml(event.type)}</strong><span>${escapeHtml(event.record.patientHint)} / ${escapeHtml(event.record.ward || "-")}</span></div><p>특이 소견: ${escapeHtml(cleanDisplayText(event.record.labNote || "-"))} · 비고: ${escapeHtml(cleanDisplayText(event.record.memo || "-"))}</p></article>`;
+      function renderPatientView() {
+        const groups = patientGroups();
+        const dateCell = (value) => escapeHtml(value || "-");
+        return `<section class="panel"><div class="section-title"><h2>환자별 보기</h2><p>${groups.length}명</p></div><div class="filters"><input id="search" placeholder="환자 식별 정보, 병동, 메모 검색" value="${escapeHtml(searchText)}" /></div><div class="cards">${groups.length ? groups.map(([name, patientRecords]) => `<article class="event"><div><strong>${escapeHtml(name)}</strong><span>${patientRecords.length}건 / ${escapeHtml(patientRecords[0]?.ward || "-")}</span></div><div class="table-wrap"><table><thead><tr><th>신환</th><th>1개월</th><th>3개월</th><th>6개월</th><th>이번 처방</th><th>다음 처방</th><th>혈관외과</th><th>메모</th></tr></thead><tbody>${patientRecords.map((record) => `<tr><td>${dateCell(record.newPatientDate)}</td><td>${dateCell(record.oneMonthDate)}</td><td>${dateCell(record.threeMonthDate)}</td><td>${dateCell(record.sixMonthDate)}</td><td>${dateCell(record.prescriptionDate)}</td><td>${dateCell(record.nextPrescriptionDate)}</td><td>${dateCell(record.vascularVisitDate)}</td><td>${escapeHtml(cleanDisplayText([record.labNote, record.memo].filter(Boolean).join(" / ") || "-"))}</td></tr>`).join("")}</tbody></table></div></article>`).join("") : `<p class="empty">표시할 환자 기록이 없습니다.</p>`}</div></section>`;
+      }
+      function renderAllView(events) {
+        const visible = filteredRecords();
+        const dateCell = (value) => escapeHtml(value || "-");
+        return `<section class="panel"><div class="section-title"><h2>저장된 기록</h2><p>${visible.length}건 표시</p></div><div class="filters"><input id="search" placeholder="환자 식별 정보, 병동, 메모 검색" value="${escapeHtml(searchText)}" /></div><div class="table-wrap"><table><thead><tr><th>환자</th><th>구분</th><th>신환 검사</th><th>1개월 검사</th><th>3개월 검사</th><th>6개월 검사</th><th>이번 처방</th><th>다음 처방</th><th>혈관외과</th><th>다가오는 일정</th><th>메모</th></tr></thead><tbody>${visible.length ? visible.map((record) => { const next = events.find((event) => event.record.id === record.id && event.date >= todayIso()); return `<tr><td>${escapeHtml(record.patientHint)}</td><td>${escapeHtml(record.ward || "-")}</td><td>${dateCell(record.newPatientDate)}</td><td>${dateCell(record.oneMonthDate)}</td><td>${dateCell(record.threeMonthDate)}</td><td>${dateCell(record.sixMonthDate)}</td><td>${dateCell(record.prescriptionDate)}</td><td>${dateCell(record.nextPrescriptionDate)}</td><td>${dateCell(record.vascularVisitDate)}</td><td>${next ? `${escapeHtml(next.date)} ${escapeHtml(next.type)}` : "-"}</td><td>${escapeHtml(cleanDisplayText(record.memo || "-"))}</td></tr>`; }).join("") : `<tr><td colspan="11">표시할 일정이 없습니다.</td></tr>`}</tbody></table></div></section>`;
+      }
+
+      function bindEvents() {
+        document.querySelectorAll("[data-tab]").forEach((button) => button.addEventListener("click", () => { activeTab = button.dataset.tab || "write"; lastResult = ""; render(); }));
+        document.querySelector("#schedule-form")?.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const form = new FormData(event.currentTarget);
+          const patientHint = String(form.get("patientHint") || "").trim();
+          const hasDate = fields.some(([key]) => Boolean(form.get(key)));
+          if (!patientHint || !hasDate) { lastResult = "환자 식별 정보와 날짜 하나 이상을 입력해 주세요."; render(); return; }
+          const record = makeRecord({
+            patientHint,
+            ward: String(form.get("ward") || "").trim(),
+            newPatientDate: String(form.get("newPatientDate") || ""),
+            oneMonthDate: String(form.get("oneMonthDate") || ""),
+            threeMonthDate: String(form.get("threeMonthDate") || ""),
+            sixMonthDate: String(form.get("sixMonthDate") || ""),
+            prescriptionDate: String(form.get("prescriptionDate") || ""),
+            nextPrescriptionDate: String(form.get("nextPrescriptionDate") || ""),
+            vascularVisitDate: String(form.get("vascularVisitDate") || ""),
+            labNote: String(form.get("labNote") || "").trim(),
+            memo: String(form.get("memo") || "").trim()
+          });
+          await persistRecord(record);
+          lastResult = `${record.patientHint} 일정이 저장됐습니다.`;
+          render();
+        });
+        document.querySelector("#settings-form")?.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const form = new FormData(event.currentTarget);
+          localStorage.setItem(CONFIG_KEY, JSON.stringify({ url: String(form.get("url") || "").trim(), anonKey: String(form.get("anonKey") || "").trim() }));
+          lastResult = "Supabase 연결 정보를 저장했습니다.";
+          await loadRecords();
+          render();
+        });
+        document.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => handleAction(button.dataset.action || "")));
+        document.querySelectorAll("[data-user-action]").forEach((button) => button.addEventListener("click", () => handleUserAction(button.dataset.userAction || "", button.dataset.email || "")));
+        document.querySelector("#csv-upload")?.addEventListener("change", handleCsvUpload);
+        document.querySelector("#search")?.addEventListener("input", (event) => { searchText = event.currentTarget.value; render(); });
+      }
+
+      function bindAuthEvents() {
+        document.querySelector("#auth-form")?.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const form = new FormData(event.currentTarget);
+          const name = String(form.get("name") || "").trim();
+          const email = normalizeEmail(form.get("email"));
+          if (!name || !email) { lastResult = "이름과 이메일을 입력해 주세요."; renderAuthView(); return; }
+          const existing = authUsers.find((user) => user.email === email);
+          const firstAdmin = !hasApprovedAdmin();
+          if (existing) {
+            const updated = { ...existing, name: existing.name || name };
+            localStorage.setItem(USER_SESSION_KEY, JSON.stringify({ email: updated.email, name: updated.name }));
+            currentUser = updated;
+            lastResult = updated.status === "approved" ? "로그인되었습니다." : "승인 대기 중입니다.";
+            render();
+            return;
+          }
+          const user = { id: crypto.randomUUID(), name, email, role: firstAdmin ? "admin" : "member", status: firstAdmin ? "approved" : "pending" };
+          const ok = await saveAuthUser(user);
+          lastResult = firstAdmin ? "관리자로 등록되었습니다." : ok ? "회원가입 신청이 접수되었습니다. 관리자 승인을 기다려 주세요." : "신청 저장 중 문제가 생겼습니다.";
+          render();
+        });
+      }
+
+      async function handleUserAction(action, email) {
+        if (currentUser?.role !== "admin") return;
+        const target = authUsers.find((user) => user.email === normalizeEmail(email));
+        if (!target) return;
+        const updated = { ...target, status: action === "approve" ? "approved" : "rejected" };
+        const ok = await saveAuthUser(updated, false);
+        currentUser = authUsers.find((user) => user.email === currentUser.email) || currentUser;
+        activeTab = "admin";
+        lastResult = ok ? `${updated.name || updated.email} 처리 완료` : "승인 처리 중 문제가 생겼습니다.";
+        await loadRecords();
+        activeTab = "admin";
+        render();
+      }
+
+      function handleAction(action) {
+        if (action === "sample") { records = [...sampleRecords(), ...records]; localStorage.setItem(STORAGE_KEY, JSON.stringify(records)); lastResult = "샘플 데이터 3건을 넣었습니다."; }
+        if (action === "clear") { records = []; localStorage.setItem(STORAGE_KEY, JSON.stringify(records)); lastResult = "이 브라우저의 화면 목록을 비웠습니다."; }
+        if (action === "downloadCsv") download("dialysis_schedule.csv", toCsv(records), "text/csv;charset=utf-8");
+        if (action === "downloadTxt") download("dialysis_schedule_summary.txt", toTextSummary(getEvents()), "text/plain;charset=utf-8");
+        render();
+      }
+      async function handleCsvUpload(event) {
+        const file = event.currentTarget.files?.[0];
+        if (!file) return;
+        try {
+          const imported = await fileToRecords(file);
+          if (!imported.length) {
+            lastResult = "가져올 수 있는 일정이 없습니다. 파일의 첫 행 제목과 날짜 내용을 확인해 주세요.";
+            render();
+            return;
+          }
+          const result = await persistRecords(imported);
+          lastResult = result.synced ? `${file.name}에서 ${result.added}건을 가져왔습니다. 중복 ${imported.length - result.added}건은 건너뛰었습니다.` : `${file.name}에서 ${result.added}건을 가져왔고, Supabase 저장은 확인이 필요합니다.`;
+        } catch (error) {
+          lastResult = "파일 업로드 중 오류가 났습니다. CSV, TSV, XLSX, XLS 형식인지 확인해 주세요.";
+        }
+        render();
+      }
+      async function persistRecords(imported) {
+        const seen = new Set(records.map(recordSignature));
+        const uniqueImported = imported.filter((record) => {
+          const signature = recordSignature(record);
+          if (seen.has(signature)) return false;
+          seen.add(signature);
+          return true;
+        });
+        records = dedupeRecords([...uniqueImported, ...records]);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+        const supabase = getSupabase();
+        if (!supabase || !uniqueImported.length) return { synced: true, added: uniqueImported.length };
+        const rows = uniqueImported.map((record) => ({
+          id: record.id,
+          title: record.title,
+          input_text: record.patientHint,
+          result_text: record.labNote,
+          category: record.ward,
+          status: record.status,
+          memo: record.memo,
+          patient_hint: record.patientHint,
+          new_patient_date: record.newPatientDate || null,
+          one_month_date: record.oneMonthDate || null,
+          three_month_date: record.threeMonthDate || null,
+          six_month_date: record.sixMonthDate || null,
+          prescription_date: record.prescriptionDate || null,
+          next_prescription_date: record.nextPrescriptionDate || null,
+          vascular_visit_date: record.vascularVisitDate || null,
+          updated_at: record.updatedAt
+        }));
+        const { error } = await supabase.from("records").upsert(rows);
+        return { synced: !error, added: uniqueImported.length };
+      }
+      function toCsv(source) {
+        const header = ["환자 식별 정보", "병동/구분", "신환", "1개월", "3개월", "6개월", "이번 처방", "다음 처방", "혈관외과", "특이 소견", "비고"];
+        const rows = source.map((record) => [record.patientHint, record.ward, record.newPatientDate, record.oneMonthDate, record.threeMonthDate, record.sixMonthDate, record.prescriptionDate, record.nextPrescriptionDate, record.vascularVisitDate, record.labNote, record.memo]);
+        return [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join(String.fromCharCode(10));
+      }
+      async function fileToRecords(file) {
+        const name = file.name.toLowerCase();
+        if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+          const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+          return workbook.SheetNames.flatMap((sheetName) => {
+            const sheet = workbook.Sheets[sheetName];
+            const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: "" });
+            return rowsToRecords(rows, sheetName);
+          });
+        }
+        const cleanText = (await file.text()).replace(/\t/g, ",");
+        return csvToRecords(cleanText);
+      }
+      function csvToRecords(text) {
+        const cleanText = text.charCodeAt(0) === 65279 ? text.slice(1) : text;
+        const rows = parseCsv(cleanText).filter((row) => row.some((cell) => cell.trim()));
+        return rowsToRecords(rows, "업로드");
+      }
+      function rowsToRecords(rows, sourceName = "업로드") {
+        if (rows.length < 2) return [];
+        const headerIndex = findHeaderRow(rows);
+        const originalHeader = rows[headerIndex].map((cell, index) => String(cell || `열${index + 1}`).trim() || `열${index + 1}`);
+        const header = originalHeader.map(normalizeHeader);
+        const indexOf = (...names) => names.map((name) => header.indexOf(normalizeHeader(name))).find((index) => index >= 0);
+        const indexes = {
+          patientHint: indexOf("환자 식별 정보", "환자", "환자식별정보"),
+          ward: indexOf("병동/구분", "병동", "구분"),
+          newPatientDate: indexOf("신환", "신환 검사일"),
+          oneMonthDate: indexOf("1개월", "1개월 검사일"),
+          threeMonthDate: indexOf("3개월", "3개월 검사일"),
+          sixMonthDate: indexOf("6개월", "6개월 검사일"),
+          prescriptionDate: indexOf("이번 처방", "이번 처방일", "이번달 처방", "이번달 처방일", "이번달 처방 날짜", "처방 날짜", "처방일", "prescription date", "current prescription date", "this month prescription date", "rx date", "current rx date"),
+          nextPrescriptionDate: indexOf("다음 처방", "다음 처방일", "다음 처방 날짜", "다음처방", "다음처방일", "next prescription date", "next prescription", "next rx date", "next rx"),
+          vascularVisitDate: indexOf("혈관외과", "혈관외과 방문일"),
+          labNote: indexOf("특이 소견", "혈액검사 특이 소견"),
+          memo: indexOf("비고", "메모"),
+          status: undefined
+        };
+        const knownIndexes = new Set(Object.values(indexes).filter((index) => index !== undefined));
+        const pickRaw = (row, key) => indexes[key] === undefined ? "" : row[indexes[key]];
+        const pickText = (row, key) => String(pickRaw(row, key) || "").trim();
+        let lastPatientHint = "";
+        let lastWard = "";
+        return rows.slice(headerIndex + 1).map((row, offset) => {
+          const rowHasContent = row.some((cell) => String(cell || "").trim());
+          if (!rowHasContent) return null;
+          const rowNumber = headerIndex + offset + 2;
+          const rawPatientHint = pickText(row, "patientHint");
+          const rawWard = pickText(row, "ward");
+          if (rawPatientHint) lastPatientHint = rawPatientHint;
+          if (rawWard) lastWard = rawWard;
+          const extraMemo = row.map((cell, index) => ({ label: originalHeader[index] || `열${index + 1}`, value: String(cell || "").trim(), index }))
+            .filter((item) => item.value && !knownIndexes.has(item.index))
+            .map((item) => `${item.label}: ${item.value}`)
+            .join(" / ");
+          const baseMemo = pickText(row, "memo");
+          const patientHint = rawPatientHint || lastPatientHint || `${sourceName} ${rowNumber}행`;
+          const values = {
+            patientHint,
+            ward: rawWard || lastWard,
+            newPatientDate: normalizeDate(pickRaw(row, "newPatientDate")),
+            oneMonthDate: normalizeDate(pickRaw(row, "oneMonthDate")),
+            threeMonthDate: normalizeDate(pickRaw(row, "threeMonthDate")),
+            sixMonthDate: normalizeDate(pickRaw(row, "sixMonthDate")),
+            prescriptionDate: normalizeDate(pickRaw(row, "prescriptionDate")),
+            nextPrescriptionDate: normalizeDate(pickRaw(row, "nextPrescriptionDate")),
+            vascularVisitDate: normalizeDate(pickRaw(row, "vascularVisitDate")),
+            labNote: pickText(row, "labNote"),
+            memo: [baseMemo, extraMemo ? `추가 내용: ${extraMemo}` : ""].filter(Boolean).join(" / ")
+          };
+          return makeRecord(values);
+        }).filter(Boolean);
+      }
+      function findHeaderRow(rows) {
+        const scoreRow = (row) => row.map(normalizeHeader).filter((cell) => ["환자식별정보", "환자", "병동/구분", "병동", "신환", "신환검사일", "1개월", "3개월", "6개월", "이번처방", "이번달처방", "이번달처방날짜", "처방날짜", "처방일", "prescriptiondate", "currentprescriptiondate", "thismonthprescriptiondate", "rxdate", "다음처방", "다음처방날짜", "nextprescriptiondate", "nextprescription", "nextrxdate", "혈관외과", "비고", "메모"].includes(cell)).length;
+        let bestIndex = 0;
+        let bestScore = 0;
+        rows.slice(0, 12).forEach((row, index) => {
+          const score = scoreRow(row);
+          if (score > bestScore) { bestScore = score; bestIndex = index; }
+        });
+        return bestIndex;
+      }
+      function parseCsv(text) {
+        const rows = [];
+        let row = [];
+        let cell = "";
+        let quoted = false;
+        const lineFeed = String.fromCharCode(10);
+        const carriageReturn = String.fromCharCode(13);
+        for (let i = 0; i < text.length; i += 1) {
+          const char = text[i];
+          const next = text[i + 1];
+          if (char === '"' && quoted && next === '"') { cell += '"'; i += 1; continue; }
+          if (char === '"') { quoted = !quoted; continue; }
+          if (char === "," && !quoted) { row.push(cell); cell = ""; continue; }
+          if ((char === lineFeed || char === carriageReturn) && !quoted) {
+            if (char === carriageReturn && next === lineFeed) i += 1;
+            row.push(cell);
+            rows.push(row);
+            row = [];
+            cell = "";
+            continue;
+          }
+          cell += char;
+        }
+        row.push(cell);
+        rows.push(row);
+        return rows;
+      }
+      function normalizeDate(value) {
+        if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
+        if (typeof value === "number" && Number.isFinite(value)) {
+          const date = new Date(Date.UTC(1899, 11, 30) + Math.round(value) * 86400000);
+          return date.toISOString().slice(0, 10);
+        }
+        const trimmed = String(value || "").trim();
+        if (!trimmed) return "";
+        const normalized = trimmed.replace(/[년월]/g, "-").replace(/일/g, "").replace(/\s+/g, "").replace(/[.]/g, "-").replace(/-+/g, "-").replace(/-$/, "");
+        let match = normalized.match(/^([0-9]{4})[-/]([0-9]{1,2})[-/]([0-9]{1,2})$/);
+        if (match) return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+        match = normalized.match(/^([0-9]{8})$/);
+        if (match) return `${match[1].slice(0, 4)}-${match[1].slice(4, 6)}-${match[1].slice(6, 8)}`;
+        match = normalized.match(/^([0-9]{6})$/);
+        if (match) return `20${match[1].slice(0, 2)}-${match[1].slice(2, 4)}-${match[1].slice(4, 6)}`;
+        match = normalized.match(/^([0-9]{1,2})[-/]([0-9]{1,2})[-/]([0-9]{2,4})$/);
+        if (match) {
+          const year = match[3].length === 2 ? `20${match[3]}` : match[3];
+          return `${year}-${match[1].padStart(2, "0")}-${match[2].padStart(2, "0")}`;
+        }
+        match = normalized.match(/^([0-9]{1,2})[-/]([0-9]{1,2})$/);
+        if (!match) return "";
+        return `${todayIso().slice(0, 4)}-${match[1].padStart(2, "0")}-${match[2].padStart(2, "0")}`;
+      }
+      function normalizeHeader(value) {
+        return String(value || "").trim().toLowerCase().replace(/\s+/g, "").replace(/[()_.-]/g, "");
+      }
+      function cleanDisplayText(value) {
+        return String(value)
+          .replace(/\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+([0-9]{1,2})\s+([0-9]{4})\s+[0-9:]+\s+GMT[^\s/]*/gi, (_match, month, day, year) => {
+            const monthNumber = { jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06", jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12" }[month.toLowerCase()];
+            return `${year}-${monthNumber}-${String(day).padStart(2, "0")}`;
+          })
+          .replace(/\s*\(한국 표준시\)/g, "")
+          .replace(/this month prescription date/gi, "이번달 처방 날짜")
+          .replace(/current prescription date/gi, "이번달 처방 날짜")
+          .replace(/prescription date/gi, "처방 날짜")
+          .replace(/next prescription date/gi, "다음 처방 날짜")
+          .replace(/next prescription/gi, "다음 처방")
+          .replace(/current rx date/gi, "이번달 처방 날짜")
+          .replace(/next rx date/gi, "다음 처방 날짜")
+          .replace(/rx date/gi, "처방 날짜");
+      }
+      function toTextSummary(events) {
+        if (!events.length) return "등록된 일정이 없습니다.";
+        return [`투석 환자 일정 체크 도우미 요약`, `생성일: ${todayIso()}`, ""].concat(events.map((event) => `- ${event.date} | ${event.record.patientHint} | ${event.type} | ${event.record.ward || "-"} | ${event.record.memo || "-"}`)).join(String.fromCharCode(10));
+      }
+      function download(filename, content, mime) {
+        const blob = new Blob([`${String.fromCharCode(65279)}${content}`], { type: mime });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        link.click();
+        URL.revokeObjectURL(url);
+      }
+
+      await loadRecords();
+      render();
+    </script>
+  </body>
+</html>
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>투석 환자 일정 체크 도우미</title>
+    <style>
+      * { box-sizing: border-box; }
+      :root {
+        --bg: #f4f7fb;
+        --surface: #ffffff;
+        --surface-soft: #f8fbfd;
+        --text: #18212b;
+        --muted: #64717f;
+        --line: #dce5ec;
+        --brand: #0b6b68;
+        --brand-strong: #084f4d;
+        --accent: #d97706;
+        --focus: rgba(11, 107, 104, .16);
+      }
+      body { margin: 0; background: radial-gradient(circle at top left, #e7f4f1 0, rgba(231, 244, 241, 0) 34%), var(--bg); color: var(--text); font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      button, input, select, textarea { font: inherit; }
+      button { border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 8px; min-height: 42px; padding: 0 14px; cursor: pointer; box-shadow: 0 1px 2px rgba(22, 33, 43, .04); }
+      button:hover { border-color: var(--brand); background: #f7fbfa; }
+      button:focus-visible, input:focus, select:focus, textarea:focus { outline: 3px solid var(--focus); border-color: var(--brand); }
+      .primary { background: var(--brand); color: #fff; border-color: var(--brand); font-weight: 800; }
+      .primary:hover { background: var(--brand-strong); color: #fff; }
+      .shell { width: min(1220px, calc(100% - 28px)); margin: 0 auto; padding: 24px 0 48px; }
+      .topbar { display: grid; grid-template-columns: 1fr minmax(280px, 380px); gap: 20px; align-items: end; padding: 24px 0 14px; }
+      .eyebrow { margin: 0 0 8px; color: var(--accent); font-size: .8rem; font-weight: 900; text-transform: uppercase; }
+      h1, h2, p { margin-top: 0; }
+      h1 { margin-bottom: 10px; font-size: clamp(2.1rem, 4vw, 3.65rem); line-height: 1.04; letter-spacing: 0; }
+      h2 { margin-bottom: 4px; font-size: 1.12rem; }
+      .subtitle { max-width: 720px; color: var(--muted); font-size: 1.02rem; line-height: 1.65; }
+      .privacy, .mini-note, .result { border-left: 5px solid var(--brand); background: #e9f7f4; border-radius: 8px; padding: 14px 16px; box-shadow: 0 8px 24px rgba(24, 33, 43, .06); }
+      .privacy strong, .privacy span { display: block; }
+      .privacy span { margin-top: 6px; color: #36534f; line-height: 1.55; }
+      .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 18px 0; }
+      .metrics article, .panel { border: 1px solid var(--line); background: rgba(255, 255, 255, .94); border-radius: 8px; box-shadow: 0 10px 26px rgba(24, 33, 43, .06); }
+      .metrics article { padding: 16px; position: relative; overflow: hidden; }
+      .metrics article::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: var(--brand); }
+      .metrics span { display: block; color: var(--muted); font-size: .88rem; font-weight: 700; }
+      .metrics strong { display: block; margin-top: 8px; font-size: 1.82rem; }
+      .tabs { display: flex; gap: 8px; overflow-x: auto; padding: 8px; margin-bottom: 14px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 255, 255, .78); }
+      .tabs button { flex: 0 0 auto; border-color: transparent; background: transparent; box-shadow: none; font-weight: 750; }
+      .tabs .active { background: var(--text); color: #fff; border-color: var(--text); }
+      .workgrid { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 14px; }
+      .panel { padding: 18px; }
+      .section-title { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 16px; }
+      .section-title p { color: var(--muted); margin-bottom: 0; }
+      form, .side { display: grid; gap: 14px; }
+      label { display: grid; gap: 7px; color: #2f3f49; font-weight: 750; }
+      input, select, textarea { width: 100%; border: 1px solid #cbd7df; border-radius: 8px; min-height: 42px; padding: 10px 12px; background: #fff; color: var(--text); }
+      textarea { min-height: 88px; resize: vertical; }
+      .date-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+      .cards { display: grid; gap: 10px; }
+      .event { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: var(--surface-soft); }
+      .event strong, .event span { display: block; }
+      .event span, .event p, .empty { color: var(--muted); line-height: 1.55; }
+      .event p { margin: 10px 0 0; }
+      .filters { display: grid; grid-template-columns: 1fr 180px; gap: 10px; margin-bottom: 12px; }
+      .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+      table { width: 100%; border-collapse: collapse; min-width: 1120px; background: #fff; }
+      th, td { border-bottom: 1px solid #e4ebf0; padding: 12px 10px; text-align: left; vertical-align: top; }
+      th { color: #30424d; background: #eef5f7; position: sticky; top: 0; z-index: 1; font-size: .9rem; }
+      tr:nth-child(even) td { background: #fbfdfe; }
+      td { color: #263540; line-height: 1.45; }
+      @media (max-width: 820px) {
+        .topbar, .workgrid, .metrics, .date-grid, .filters { grid-template-columns: 1fr; }
+        .shell { width: min(100% - 18px, 1220px); padding-top: 12px; }
+        h1 { font-size: 2.05rem; }
+        .section-title { display: block; }
+        .panel { padding: 14px; }
+        .tabs { padding: 6px; }
+        .tabs button { min-height: 38px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+      import * as XLSX from "https://esm.sh/xlsx@0.18.5";
+
+      const STORAGE_KEY = "dialysis-schedule-helper.records.v2";
+      const CONFIG_KEY = "dialysis-schedule-helper.supabase";
+      const USER_SESSION_KEY = "dialysis-schedule-helper.user";
+      const AUTH_CATEGORY = "__app_user__";
+      const DEFAULT_SUPABASE_CONFIG = {
+        url: "https://buvpknewbwfnuopdsbtv.supabase.co",
+        anonKey: "sb_publishable_o_qw70ul6Y1zRmV7sva4Gw_d5hMyfXq"
+      };
+      const app = document.querySelector("#app");
+      let records = [];
+      let authUsers = [];
+      let currentUser = null;
+      let activeTab = "write";
+      let searchText = "";
+      let lastResult = "";
+
+      const fields = [
+        ["newPatientDate", "신환 검사일"],
+        ["oneMonthDate", "1개월 검사일"],
+        ["threeMonthDate", "3개월 검사일"],
+        ["sixMonthDate", "6개월 검사일"],
+        ["prescriptionDate", "이번 처방일"],
+        ["nextPrescriptionDate", "다음 처방일"],
+        ["vascularVisitDate", "혈관외과 방문일"]
+      ];
+
+      const todayIso = () => new Date().toISOString().slice(0, 10);
+      const addDays = (days) => {
+        const date = new Date();
+        date.setDate(date.getDate() + days);
+        return date.toISOString().slice(0, 10);
+      };
+      const escapeHtml = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+      const getConfig = () => ({ ...DEFAULT_SUPABASE_CONFIG, ...JSON.parse(localStorage.getItem(CONFIG_KEY) || "{}") });
+      const getSupabase = () => {
+        const config = getConfig();
+        return config.url && config.anonKey ? createClient(config.url, config.anonKey) : null;
+      };
+
+      function sampleRecords() {
+        return [
+          makeRecord({ patientHint: "김OO", ward: "월수금 오전", newPatientDate: todayIso(), oneMonthDate: addDays(7), threeMonthDate: addDays(21), prescriptionDate: todayIso(), nextPrescriptionDate: addDays(28), labNote: "칼륨 재확인 필요 메모", memo: "오전 회진 전 확인" }),
+          makeRecord({ patientHint: "이OO", ward: "화목토 오후", threeMonthDate: addDays(3), sixMonthDate: addDays(40), prescriptionDate: addDays(5), vascularVisitDate: addDays(2), labNote: "Hb 추적 메모", memo: "보호자 설명 여부 확인" }),
+          makeRecord({ patientHint: "박OO", ward: "격일반", oneMonthDate: addDays(-2), nextPrescriptionDate: addDays(14), vascularVisitDate: todayIso(), labNote: "추가 채혈 결과 대기", memo: "확인 후 상태 변경", status: "확인 완료" })
+        ];
+      }
+
+      function makeRecord(values) {
+        const now = new Date().toISOString();
+        return {
+          id: crypto.randomUUID(),
+          title: `${values.patientHint || "환자"} 일정`,
+          patientHint: "",
+          ward: "",
+          newPatientDate: "",
+          oneMonthDate: "",
+          threeMonthDate: "",
+          sixMonthDate: "",
+          prescriptionDate: "",
+          nextPrescriptionDate: "",
+          vascularVisitDate: "",
+          labNote: "",
+          memo: "",
+          status: "확인 전",
+          createdAt: now,
+          updatedAt: now,
+          ...values
+        };
+      }
+
+      function recordSignature(record) {
+        return [
+          record.patientHint,
+          record.ward,
+          record.newPatientDate,
+          record.oneMonthDate,
+          record.threeMonthDate,
+          record.sixMonthDate,
+          record.prescriptionDate,
+          record.nextPrescriptionDate,
+          record.vascularVisitDate,
+          record.labNote,
+          cleanDisplayText(record.memo || ""),
+        ].map((value) => String(value || "").trim().toLowerCase()).join("|");
+      }
+
+      function dedupeRecords(source) {
+        const seen = new Set();
+        return source.filter((record) => {
+          const signature = recordSignature(record);
+          if (seen.has(signature)) return false;
+          seen.add(signature);
+          return true;
+        });
+      }
+
+      async function loadRecords() {
+        const supabase = getSupabase();
+        if (!supabase) {
+          records = dedupeRecords(JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"));
+          syncCurrentUser();
+          return;
+        }
+        const { data, error } = await supabase.from("records").select("*").order("created_at", { ascending: false });
+        if (error || !data) {
+          records = dedupeRecords(JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"));
+          lastResult = "Supabase에서 불러오지 못해 이 브라우저의 저장 목록을 보여줍니다.";
+          syncCurrentUser();
+          return;
+        }
+        authUsers = data.filter((row) => row.category === AUTH_CATEGORY).map(rowToAuthUser);
+        records = dedupeRecords(data.filter((row) => row.category !== AUTH_CATEGORY).map((row) => ({
+          id: row.id,
+          title: row.title || "",
+          patientHint: row.patient_hint || row.input_text || "",
+          ward: row.category || "",
+          newPatientDate: row.new_patient_date || "",
+          oneMonthDate: row.one_month_date || "",
+          threeMonthDate: row.three_month_date || "",
+          sixMonthDate: row.six_month_date || "",
+          prescriptionDate: row.prescription_date || "",
+          nextPrescriptionDate: row.next_prescription_date || "",
+          vascularVisitDate: row.vascular_visit_date || "",
+          labNote: row.result_text || "",
+          memo: row.memo || "",
+          status: row.status === "확인 완료" ? "확인 완료" : "확인 전",
+          createdAt: row.created_at || new Date().toISOString(),
+          updatedAt: row.updated_at || new Date().toISOString()
+        })));
+        syncCurrentUser();
+      }
+
+      const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
+      const hasApprovedAdmin = () => authUsers.some((user) => user.role === "admin" && user.status === "approved");
+      function rowToAuthUser(row) {
+        let meta = {};
+        try { meta = JSON.parse(row.memo || "{}"); } catch (_error) { meta = {}; }
+        return {
+          id: row.id,
+          name: meta.name || row.title || "",
+          email: normalizeEmail(row.input_text || row.patient_hint || ""),
+          role: meta.role === "admin" ? "admin" : "member",
+          status: row.status === "approved" ? "approved" : row.status === "rejected" ? "rejected" : "pending",
+          createdAt: row.created_at || "",
+          updatedAt: row.updated_at || ""
+        };
+      }
+      function syncCurrentUser() {
+        const saved = JSON.parse(localStorage.getItem(USER_SESSION_KEY) || "null");
+        if (!saved?.email) { currentUser = null; return; }
+        currentUser = authUsers.find((user) => user.email === normalizeEmail(saved.email)) || saved;
+      }
+      async function saveAuthUser(user, setSession = true) {
+        const normalized = { ...user, email: normalizeEmail(user.email), updatedAt: new Date().toISOString() };
+        authUsers = [normalized, ...authUsers.filter((item) => item.email !== normalized.email)];
+        if (setSession) {
+          localStorage.setItem(USER_SESSION_KEY, JSON.stringify({ email: normalized.email, name: normalized.name }));
+          currentUser = normalized;
+        }
+        const supabase = getSupabase();
+        if (!supabase) return true;
+        const { error } = await supabase.from("records").upsert({
+          id: normalized.id,
+          title: normalized.name,
+          input_text: normalized.email,
+          patient_hint: normalized.email,
+          category: AUTH_CATEGORY,
+          status: normalized.status,
+          memo: JSON.stringify({ name: normalized.name, role: normalized.role }),
+          updated_at: normalized.updatedAt
+        });
+        return !error;
+      }
+
+      async function persistRecord(record) {
+        const signature = recordSignature(record);
+        records = [record, ...records.filter((item) => item.id !== record.id && recordSignature(item) !== signature)];
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+        const supabase = getSupabase();
+        if (!supabase) return;
+        const { error } = await supabase.from("records").upsert({
+          id: record.id,
+          title: record.title,
+          input_text: record.patientHint,
+          result_text: record.labNote,
+          category: record.ward,
+          status: record.status,
+          memo: record.memo,
+          patient_hint: record.patientHint,
+          new_patient_date: record.newPatientDate || null,
+          one_month_date: record.oneMonthDate || null,
+          three_month_date: record.threeMonthDate || null,
+          six_month_date: record.sixMonthDate || null,
+          prescription_date: record.prescriptionDate || null,
+          next_prescription_date: record.nextPrescriptionDate || null,
+          vascular_visit_date: record.vascularVisitDate || null,
+          updated_at: record.updatedAt
+        });
+        if (error) lastResult = "Supabase 저장은 실패했지만, 이 브라우저에는 저장했습니다. SQL 테이블과 RLS 정책을 확인해 주세요.";
+      }
+
+      function getEvents(source = records) {
+        return source.flatMap((record) => fields.filter(([key]) => Boolean(record[key])).map(([key, label]) => ({ record, date: String(record[key]), type: label }))).sort((a, b) => a.date.localeCompare(b.date));
+      }
       const thisMonth = (event) => event.date.slice(0, 7) === todayIso().slice(0, 7);
       const upcoming = (event) => event.date >= todayIso() && event.date <= addDays(7);
       const filteredRecords = () => records.filter((record) => [record.title, record.patientHint, record.ward, record.labNote, record.memo].join(" ").toLowerCase().includes(searchText.toLowerCase()));

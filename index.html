@@ -109,11 +109,17 @@
         ["vascularVisitDate", "혈관외과 방문일"]
       ];
 
-      const todayIso = () => new Date().toISOString().slice(0, 10);
+      const toLocalIsoDate = (date) => {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+        return `${year}-${month}-${day}`;
+      };
+      const todayIso = () => toLocalIsoDate(new Date());
       const addDays = (days) => {
         const date = new Date();
         date.setDate(date.getDate() + days);
-        return date.toISOString().slice(0, 10);
+        return toLocalIsoDate(date);
       };
       const escapeHtml = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
       const getConfig = () => ({ ...DEFAULT_SUPABASE_CONFIG, ...JSON.parse(localStorage.getItem(CONFIG_KEY) || "{}") });
@@ -741,7 +747,7 @@
         return rows;
       }
       function normalizeDate(value) {
-        if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
+        if (value instanceof Date && !Number.isNaN(value.getTime())) return toLocalIsoDate(value);
         if (typeof value === "number" && Number.isFinite(value)) {
           const date = new Date(Date.UTC(1899, 11, 30) + Math.round(value) * 86400000);
           return date.toISOString().slice(0, 10);

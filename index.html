@@ -81,6 +81,7 @@
     <script type="module">
       import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
       import * as XLSX from "https://esm.sh/xlsx@0.18.5";
+      import pptxgen from "https://esm.sh/pptxgenjs@3.12.0";
 
       const STORAGE_KEY = "dialysis-schedule-helper.records.v2";
       const CONFIG_KEY = "dialysis-schedule-helper.supabase";
@@ -391,6 +392,8 @@
             <button type="button" data-action="sample">샘플 데이터 넣기</button>
             <label>파일 업로드<input id="csv-upload" type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,text/csv,text/tab-separated-values,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" /></label>
             <button type="button" data-action="downloadCsv">CSV 다운로드</button>
+            <button type="button" data-action="downloadXlsx">엑셀 다운로드</button>
+            <button type="button" data-action="downloadPptx">PPT 다운로드</button>
             <button type="button" data-action="downloadTxt">TXT 요약 다운로드</button>
             <button type="button" data-action="clear">화면 목록 비우기</button>
             <div class="mini-note">${config.url && config.anonKey ? "Supabase 연결 정보가 있어 원격 저장을 시도합니다." : "아직 Supabase 연결 정보가 없어 이 브라우저에 저장합니다."}</div>
@@ -497,10 +500,12 @@
         render();
       }
 
-      function handleAction(action) {
+      async function handleAction(action) {
         if (action === "sample") { records = [...sampleRecords(), ...records]; localStorage.setItem(STORAGE_KEY, JSON.stringify(records)); lastResult = "샘플 데이터 3건을 넣었습니다."; }
         if (action === "clear") { records = []; localStorage.setItem(STORAGE_KEY, JSON.stringify(records)); lastResult = "이 브라우저의 화면 목록을 비웠습니다."; }
         if (action === "downloadCsv") download("dialysis_schedule.csv", toCsv(records), "text/csv;charset=utf-8");
+        if (action === "downloadXlsx") downloadXlsx(records);
+        if (action === "downloadPptx") await downloadPptx(records, getEvents());
         if (action === "downloadTxt") download("dialysis_schedule_summary.txt", toTextSummary(getEvents()), "text/plain;charset=utf-8");
         render();
       }
@@ -558,6 +563,72 @@
         const header = ["환자 식별 정보", "병동/구분", "신환", "1개월", "3개월", "6개월", "이번 처방", "다음 처방", "혈관외과", "특이 소견", "비고"];
         const rows = source.map((record) => [record.patientHint, record.ward, record.newPatientDate, record.oneMonthDate, record.threeMonthDate, record.sixMonthDate, record.prescriptionDate, record.nextPrescriptionDate, record.vascularVisitDate, record.labNote, record.memo]);
         return [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join(String.fromCharCode(10));
+      }
+      const exportRows = (source) => source.map((record) => ({
+        "환자 식별 정보": record.patientHint,
+        "병동/구분": record.ward,
+        "신환": record.newPatientDate,
+        "1개월": record.oneMonthDate,
+        "3개월": record.threeMonthDate,
+        "6개월": record.sixMonthDate,
+        "이번 처방": record.prescriptionDate,
+        "다음 처방": record.nextPrescriptionDate,
+        "혈관외과": record.vascularVisitDate,
+        "특이 소견": cleanDisplayText(record.labNote || ""),
+        "비고": cleanDisplayText(record.memo || "")
+      }));
+      function downloadXlsx(source) {
+        const worksheet = XLSX.utils.json_to_sheet(exportRows(source));
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, "전체 목록");
+        const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+        downloadBlob("dialysis_schedule.xlsx", new Blob([output], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+      }
+      async function downloadPptx(source, events) {
+        const pptx = new pptxgen();
+        pptx.layout = "LAYOUT_WIDE";
+        pptx.author = "Dialysis Schedule Helper";
+        const titleSlide = pptx.addSlide();
+        titleSlide.background = { color: "F7FBFC" };
+        titleSlide.addText("투석 환자 일정 체크 도우미", { x: 0.6, y: 0.55, w: 11.2, h: 0.55, fontSize: 28, bold: true, color: "12343B" });
+        titleSlide.addText(`생성일: ${todayIso()}`, { x: 0.65, y: 1.2, w: 5, h: 0.3, fontSize: 13, color: "48646C" });
+        titleSlide.addText(`등록 기록 ${source.length}건 / 전체 일정 ${events.length}건`, { x: 0.65, y: 1.65, w: 7, h: 0.35, fontSize: 18, bold: true, color: "1F6F78" });
+        titleSlide.addText("환자별 검사일과 처방일을 공유용 발표 파일로 정리했습니다.", { x: 0.65, y: 2.15, w: 8.5, h: 0.35, fontSize: 14, color: "48646C" });
+        const tableHeader = ["환자", "구분", "신환", "1개월", "3개월", "6개월", "이번 처방", "다음 처방", "혈관외과"];
+        const tableRows = source.map((record) => [
+          record.patientHint || "-",
+          record.ward || "-",
+          record.newPatientDate || "-",
+          record.oneMonthDate || "-",
+          record.threeMonthDate || "-",
+          record.sixMonthDate || "-",
+          record.prescriptionDate || "-",
+          record.nextPrescriptionDate || "-",
+          record.vascularVisitDate || "-"
+        ]);
+        const chunkSize = 8;
+        for (let index = 0; index < Math.max(1, tableRows.length); index += chunkSize) {
+          const slide = pptx.addSlide();
+          slide.background = { color: "FFFFFF" };
+          slide.addText("전체 목록", { x: 0.45, y: 0.25, w: 4, h: 0.35, fontSize: 18, bold: true, color: "12343B" });
+          const chunk = tableRows.slice(index, index + chunkSize);
+          slide.addTable([tableHeader, ...(chunk.length ? chunk : [["-", "-", "-", "-", "-", "-", "-", "-", "-"]])], {
+            x: 0.35,
+            y: 0.8,
+            w: 12.6,
+            h: 5.8,
+            fontSize: 8,
+            border: { type: "solid", color: "D9E4E8", pt: 0.5 },
+            color: "23373D",
+            fill: { color: "FFFFFF" },
+            margin: 0.04,
+            autoFit: false,
+            valign: "mid",
+            rowH: 0.42,
+            colW: [1.2, 1.15, 1.15, 1.15, 1.15, 1.15, 1.25, 1.25, 1.25]
+          });
+        }
+        await pptx.writeFile({ fileName: "dialysis_schedule.pptx" });
       }
       async function fileToRecords(file) {
         const name = file.name.toLowerCase();
@@ -718,6 +789,9 @@
       }
       function download(filename, content, mime) {
         const blob = new Blob([`${String.fromCharCode(65279)}${content}`], { type: mime });
+        downloadBlob(filename, blob);
+      }
+      function downloadBlob(filename, blob) {
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = url;

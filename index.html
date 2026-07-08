@@ -290,6 +290,34 @@
         if (error) lastResult = "Supabase 저장은 실패했지만, 이 브라우저에는 저장했습니다. SQL 테이블과 RLS 정책을 확인해 주세요.";
       }
 
+      async function deleteRecord(id) {
+        if (currentUser?.role !== "admin") {
+          lastResult = "관리자만 기록을 삭제할 수 있습니다.";
+          render();
+          return;
+        }
+        const target = records.find((record) => record.id === id);
+        if (!target) return;
+        if (!confirm(`${target.patientHint || "선택한 환자"} 기록 1줄을 삭제할까요?`)) return;
+        const previousRecords = records;
+        records = records.filter((record) => record.id !== id);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+        const supabase = getSupabase();
+        if (supabase) {
+          const { error } = await supabase.from("records").delete().eq("id", id);
+          if (error) {
+            records = previousRecords;
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+            lastResult = "삭제 권한이 아직 열려 있지 않아 삭제하지 못했습니다. Supabase 정책을 확인해 주세요.";
+            render();
+            return;
+          }
+        }
+        lastResult = `${target.patientHint || "선택한 환자"} 기록 1줄을 삭제했습니다.`;
+        await loadRecords();
+        render();
+      }
+
       function getEvents(source = records) {
         return source.flatMap((record) => fields.filter(([key]) => Boolean(record[key])).map(([key, label]) => ({ record, date: String(record[key]), type: label }))).sort((a, b) => a.date.localeCompare(b.date));
       }
@@ -348,6 +376,7 @@
             ${activeTab === "admin" && currentUser.role === "admin" ? renderAdminView() : ""}
             ${activeTab === "settings" ? renderSettings(config) : ""}
           </main>`;
+        addDeleteControls();
         bindEvents();
       }
 
@@ -429,6 +458,46 @@
         return `<section class="panel"><div class="section-title"><h2>전체 목록</h2><p>환자별 최신 ${visible.length}건</p></div><div class="filters"><input id="search" placeholder="환자 식별 정보, 병동, 메모 검색" value="${escapeHtml(searchText)}" /></div><div class="table-wrap"><table><thead><tr><th>환자</th><th>구분</th><th>신환 검사</th><th>1개월 검사</th><th>3개월 검사</th><th>6개월 검사</th><th>이번 처방</th><th>다음 처방</th><th>혈관외과</th><th>다가오는 일정</th><th>메모</th></tr></thead><tbody>${visible.length ? visible.map((record) => { const next = events.find((event) => event.record.id === record.id && event.date >= todayIso()); return `<tr><td>${escapeHtml(record.patientHint)}</td><td>${escapeHtml(record.ward || "-")}</td><td>${dateCell(record.newPatientDate)}</td><td>${dateCell(record.oneMonthDate)}</td><td>${dateCell(record.threeMonthDate)}</td><td>${dateCell(record.sixMonthDate)}</td><td>${dateCell(record.prescriptionDate)}</td><td>${dateCell(record.nextPrescriptionDate)}</td><td>${dateCell(record.vascularVisitDate)}</td><td>${next ? `${escapeHtml(next.date)} ${escapeHtml(next.type)}` : "-"}</td><td>${escapeHtml(cleanDisplayText(record.memo || "-"))}</td></tr>`; }).join("") : `<tr><td colspan="11">표시할 일정이 없습니다.</td></tr>`}</tbody></table></div></section>`;
       }
 
+      function addDeleteControls() {
+        if (currentUser?.role !== "admin") return;
+        const addHeader = (table) => {
+          const headerRow = table.querySelector("thead tr");
+          if (!headerRow || headerRow.querySelector("[data-delete-header]")) return;
+          const th = document.createElement("th");
+          th.dataset.deleteHeader = "true";
+          th.textContent = "삭제";
+          headerRow.appendChild(th);
+        };
+        const addCell = (row, record) => {
+          if (!record || row.querySelector("[data-delete-record]")) return;
+          const td = document.createElement("td");
+          const button = document.createElement("button");
+          button.type = "button";
+          button.dataset.deleteRecord = record.id;
+          button.textContent = "삭제";
+          td.appendChild(button);
+          row.appendChild(td);
+        };
+        if (activeTab === "all") {
+          const table = document.querySelector(".table-wrap table");
+          if (!table) return;
+          addHeader(table);
+          const visible = latestRecords();
+          table.querySelectorAll("tbody tr").forEach((row, index) => addCell(row, visible[index]));
+          return;
+        }
+        if (activeTab === "patients") {
+          const groups = patientGroups();
+          document.querySelectorAll(".cards article").forEach((article, groupIndex) => {
+            const table = article.querySelector("table");
+            if (!table) return;
+            addHeader(table);
+            const patientRecords = groups[groupIndex]?.[1] || [];
+            table.querySelectorAll("tbody tr").forEach((row, recordIndex) => addCell(row, patientRecords[recordIndex]));
+          });
+        }
+      }
+
       function bindEvents() {
         document.querySelectorAll("[data-tab]").forEach((button) => button.addEventListener("click", () => { activeTab = button.dataset.tab || "write"; lastResult = ""; render(); }));
         document.querySelector("#schedule-form")?.addEventListener("submit", async (event) => {
@@ -463,6 +532,7 @@
           render();
         });
         document.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => handleAction(button.dataset.action || "")));
+        document.querySelectorAll("[data-delete-record]").forEach((button) => button.addEventListener("click", () => deleteRecord(button.dataset.deleteRecord || "")));
         document.querySelectorAll("[data-user-action]").forEach((button) => button.addEventListener("click", () => handleUserAction(button.dataset.userAction || "", button.dataset.email || "")));
         document.querySelector("#csv-upload")?.addEventListener("change", handleCsvUpload);
         document.querySelector("#search")?.addEventListener("input", (event) => { searchText = event.currentTarget.value; render(); });

@@ -87,6 +87,7 @@
       const CONFIG_KEY = "dialysis-schedule-helper.supabase";
       const USER_SESSION_KEY = "dialysis-schedule-helper.user";
       const AUTH_CATEGORY = "__app_user__";
+      const DELETED_CATEGORY = "__deleted__";
       const DEFAULT_SUPABASE_CONFIG = {
         url: "https://buvpknewbwfnuopdsbtv.supabase.co",
         anonKey: "sb_publishable_o_qw70ul6Y1zRmV7sva4Gw_d5hMyfXq"
@@ -200,7 +201,7 @@
           return;
         }
         authUsers = data.filter((row) => row.category === AUTH_CATEGORY).map(rowToAuthUser);
-        records = dedupeRecords(data.filter((row) => row.category !== AUTH_CATEGORY).map((row) => ({
+        records = dedupeRecords(data.filter((row) => row.category !== AUTH_CATEGORY && row.category !== DELETED_CATEGORY).map((row) => ({
           id: row.id,
           title: row.title || "",
           patientHint: row.patient_hint || row.input_text || "",
@@ -304,11 +305,15 @@
         localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
         const supabase = getSupabase();
         if (supabase) {
-          const { error } = await supabase.from("records").delete().eq("id", id);
+          const { error } = await supabase.from("records").update({
+            category: DELETED_CATEGORY,
+            status: "삭제됨",
+            updated_at: new Date().toISOString()
+          }).eq("id", id);
           if (error) {
             records = previousRecords;
             localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-            lastResult = "삭제 권한이 아직 열려 있지 않아 삭제하지 못했습니다. Supabase 정책을 확인해 주세요.";
+            lastResult = "삭제 처리 권한이 아직 열려 있지 않아 삭제하지 못했습니다. Supabase 정책을 확인해 주세요.";
             render();
             return;
           }

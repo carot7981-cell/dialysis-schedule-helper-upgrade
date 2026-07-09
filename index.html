@@ -336,7 +336,11 @@
       function getEvents(source = records) {
         return source.flatMap((record) => fields.filter(([key]) => Boolean(record[key])).map(([key, label]) => ({ record, date: String(record[key]), type: label }))).sort((a, b) => a.date.localeCompare(b.date));
       }
-      const filteredRecords = () => records.filter((record) => [record.title, record.patientHint, record.ward, record.labNote, record.memo].join(" ").toLowerCase().includes(searchText.toLowerCase()));
+      const filteredRecords = () => {
+        const query = searchText.trim().toLowerCase();
+        if (!query) return records;
+        return records.filter((record) => String(record.patientHint || "").toLowerCase().includes(query));
+      };
       const latestRecords = () => {
         const latest = new Map();
         filteredRecords().forEach((record) => {
@@ -471,12 +475,12 @@
       function renderPatientView() {
         const groups = patientGroups();
         const dateCell = (value) => escapeHtml(value || "-");
-        return `<section class="panel"><div class="section-title"><h2>환자별 보기</h2><p>${groups.length}명</p></div><div class="filters"><input id="search" placeholder="환자 식별 정보, 병동, 메모 검색" value="${escapeHtml(searchText)}" /></div><div class="cards">${groups.length ? groups.map(([name, patientRecords]) => `<article class="event"><div><strong>${escapeHtml(name)}</strong><span>${patientRecords.length}건 / ${escapeHtml(patientRecords[0]?.ward || "-")}</span></div><div class="table-wrap"><table><thead><tr><th>신환</th><th>1개월</th><th>3개월</th><th>6개월</th><th>이번 처방</th><th>다음 처방</th><th>혈관외과</th><th>메모</th>${renderActionHeaders()}</tr></thead><tbody>${patientRecords.map((record) => `<tr><td>${dateCell(record.newPatientDate)}</td><td>${dateCell(record.oneMonthDate)}</td><td>${dateCell(record.threeMonthDate)}</td><td>${dateCell(record.sixMonthDate)}</td><td>${dateCell(record.prescriptionDate)}</td><td>${dateCell(record.nextPrescriptionDate)}</td><td>${dateCell(record.vascularVisitDate)}</td><td>${escapeHtml(cleanDisplayText([record.labNote, record.memo].filter(Boolean).join(" / ") || "-"))}</td>${renderActionCells(record)}</tr>`).join("")}</tbody></table></div></article>`).join("") : `<p class="empty">표시할 환자 기록이 없습니다.</p>`}</div></section>`;
+        return `<section class="panel"><div class="section-title"><h2>환자별 보기</h2><p>${groups.length}명</p></div><div class="filters"><input id="patient-search" type="search" aria-label="환자 이름 검색" autocomplete="off" placeholder="환자 이름으로 검색" value="${escapeHtml(searchText)}" /></div><div class="cards">${groups.length ? groups.map(([name, patientRecords]) => `<article class="event"><div><strong>${escapeHtml(name)}</strong><span>${patientRecords.length}건 / ${escapeHtml(patientRecords[0]?.ward || "-")}</span></div><div class="table-wrap"><table><thead><tr><th>신환</th><th>1개월</th><th>3개월</th><th>6개월</th><th>이번 처방</th><th>다음 처방</th><th>혈관외과</th><th>메모</th>${renderActionHeaders()}</tr></thead><tbody>${patientRecords.map((record) => `<tr><td>${dateCell(record.newPatientDate)}</td><td>${dateCell(record.oneMonthDate)}</td><td>${dateCell(record.threeMonthDate)}</td><td>${dateCell(record.sixMonthDate)}</td><td>${dateCell(record.prescriptionDate)}</td><td>${dateCell(record.nextPrescriptionDate)}</td><td>${dateCell(record.vascularVisitDate)}</td><td>${escapeHtml(cleanDisplayText([record.labNote, record.memo].filter(Boolean).join(" / ") || "-"))}</td>${renderActionCells(record)}</tr>`).join("")}</tbody></table></div></article>`).join("") : `<p class="empty">${searchText ? "검색한 이름과 일치하는 환자가 없습니다." : "표시할 환자 기록이 없습니다."}</p>`}</div></section>`;
       }
       function renderAllView(events) {
         const visible = latestRecords();
         const dateCell = (value) => escapeHtml(value || "-");
-        return `<section class="panel"><div class="section-title"><h2>전체 목록</h2><p>환자별 최신 ${visible.length}건</p></div><div class="filters"><input id="search" placeholder="환자 식별 정보, 병동, 메모 검색" value="${escapeHtml(searchText)}" /></div><div class="table-wrap"><table><thead><tr><th>환자</th><th>구분</th><th>신환 검사</th><th>1개월 검사</th><th>3개월 검사</th><th>6개월 검사</th><th>이번 처방</th><th>다음 처방</th><th>혈관외과</th><th>다가오는 일정</th><th>메모</th>${renderActionHeaders()}</tr></thead><tbody>${visible.length ? visible.map((record) => { const next = events.find((event) => event.record.id === record.id && event.date >= todayIso()); return `<tr><td>${escapeHtml(record.patientHint)}</td><td>${escapeHtml(record.ward || "-")}</td><td>${dateCell(record.newPatientDate)}</td><td>${dateCell(record.oneMonthDate)}</td><td>${dateCell(record.threeMonthDate)}</td><td>${dateCell(record.sixMonthDate)}</td><td>${dateCell(record.prescriptionDate)}</td><td>${dateCell(record.nextPrescriptionDate)}</td><td>${dateCell(record.vascularVisitDate)}</td><td>${next ? `${escapeHtml(next.date)} ${escapeHtml(next.type)}` : "-"}</td><td>${escapeHtml(cleanDisplayText(record.memo || "-"))}</td>${renderActionCells(record)}</tr>`; }).join("") : `<tr><td colspan="${currentUser?.role === "admin" ? 13 : 12}">표시할 일정이 없습니다.</td></tr>`}</tbody></table></div></section>`;
+        return `<section class="panel"><div class="section-title"><h2>전체 목록</h2><p>환자별 최신 ${visible.length}건</p></div><div class="filters"><input id="patient-search" type="search" aria-label="환자 이름 검색" autocomplete="off" placeholder="환자 이름으로 검색" value="${escapeHtml(searchText)}" /></div><div class="table-wrap"><table><thead><tr><th>환자</th><th>구분</th><th>신환 검사</th><th>1개월 검사</th><th>3개월 검사</th><th>6개월 검사</th><th>이번 처방</th><th>다음 처방</th><th>혈관외과</th><th>다가오는 일정</th><th>메모</th>${renderActionHeaders()}</tr></thead><tbody>${visible.length ? visible.map((record) => { const next = events.find((event) => event.record.id === record.id && event.date >= todayIso()); return `<tr><td>${escapeHtml(record.patientHint)}</td><td>${escapeHtml(record.ward || "-")}</td><td>${dateCell(record.newPatientDate)}</td><td>${dateCell(record.oneMonthDate)}</td><td>${dateCell(record.threeMonthDate)}</td><td>${dateCell(record.sixMonthDate)}</td><td>${dateCell(record.prescriptionDate)}</td><td>${dateCell(record.nextPrescriptionDate)}</td><td>${dateCell(record.vascularVisitDate)}</td><td>${next ? `${escapeHtml(next.date)} ${escapeHtml(next.type)}` : "-"}</td><td>${escapeHtml(cleanDisplayText(record.memo || "-"))}</td>${renderActionCells(record)}</tr>`; }).join("") : `<tr><td colspan="${currentUser?.role === "admin" ? 13 : 12}">${searchText ? "검색한 이름과 일치하는 환자가 없습니다." : "표시할 일정이 없습니다."}</td></tr>`}</tbody></table></div></section>`;
       }
 
       function addDeleteControls() {
@@ -562,7 +566,15 @@
         document.querySelectorAll("[data-delete-record]").forEach((button) => button.addEventListener("click", () => deleteRecord(button.dataset.deleteRecord || "")));
         document.querySelectorAll("[data-user-action]").forEach((button) => button.addEventListener("click", () => handleUserAction(button.dataset.userAction || "", button.dataset.email || "")));
         document.querySelector("#csv-upload")?.addEventListener("change", handleCsvUpload);
-        document.querySelector("#search")?.addEventListener("input", (event) => { searchText = event.currentTarget.value; render(); });
+        document.querySelector("#patient-search")?.addEventListener("input", (event) => {
+          searchText = event.currentTarget.value;
+          render();
+          const input = document.querySelector("#patient-search");
+          if (input) {
+            input.focus();
+            input.setSelectionRange(input.value.length, input.value.length);
+          }
+        });
       }
 
       function bindAuthEvents() {

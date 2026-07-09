@@ -566,15 +566,28 @@
         document.querySelectorAll("[data-delete-record]").forEach((button) => button.addEventListener("click", () => deleteRecord(button.dataset.deleteRecord || "")));
         document.querySelectorAll("[data-user-action]").forEach((button) => button.addEventListener("click", () => handleUserAction(button.dataset.userAction || "", button.dataset.email || "")));
         document.querySelector("#csv-upload")?.addEventListener("change", handleCsvUpload);
-        document.querySelector("#patient-search")?.addEventListener("input", (event) => {
-          searchText = event.currentTarget.value;
-          render();
-          const input = document.querySelector("#patient-search");
-          if (input) {
-            input.focus();
-            input.setSelectionRange(input.value.length, input.value.length);
-          }
-        });
+        const patientSearch = document.querySelector("#patient-search");
+        if (patientSearch) {
+          let composingKorean = false;
+          const applyPatientSearch = (value) => {
+            searchText = value;
+            render();
+            const input = document.querySelector("#patient-search");
+            if (input) {
+              input.focus();
+              input.setSelectionRange(input.value.length, input.value.length);
+            }
+          };
+          patientSearch.addEventListener("compositionstart", () => { composingKorean = true; });
+          patientSearch.addEventListener("compositionend", (event) => {
+            composingKorean = false;
+            applyPatientSearch(event.currentTarget.value);
+          });
+          patientSearch.addEventListener("input", (event) => {
+            if (composingKorean || event.isComposing) return;
+            applyPatientSearch(event.currentTarget.value);
+          });
+        }
       }
 
       function bindAuthEvents() {

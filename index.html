@@ -343,7 +343,7 @@
       };
       const latestRecords = () => {
         const latest = new Map();
-        filteredRecords().forEach((record) => {
+        records.forEach((record) => {
           const key = record.patientHint || record.id;
           const current = latest.get(key);
           if (!current || new Date(record.updatedAt || record.createdAt || 0) > new Date(current.updatedAt || current.createdAt || 0)) latest.set(key, record);
@@ -352,7 +352,7 @@
       };
       const patientGroups = () => {
         const groups = new Map();
-        filteredRecords().forEach((record) => {
+        records.forEach((record) => {
           const key = record.patientHint || "이름 없음";
           groups.set(key, [...(groups.get(key) || []), record]);
         });
@@ -523,6 +523,19 @@
         }
       }
 
+      function applyPatientSearchFilterToDom() {
+        const query = searchText.trim().toLowerCase();
+        document.querySelectorAll("#patient-search").forEach((input) => { input.value = searchText; });
+        document.querySelectorAll("tbody tr").forEach((row) => {
+          const patientName = (row.querySelector("td")?.textContent || "").toLowerCase();
+          row.style.display = !query || patientName.includes(query) ? "" : "none";
+        });
+        document.querySelectorAll(".cards > .event").forEach((card) => {
+          const patientName = (card.querySelector("strong")?.textContent || "").toLowerCase();
+          card.style.display = !query || patientName.includes(query) ? "" : "none";
+        });
+      }
+
       function bindEvents() {
         document.querySelectorAll("[data-tab]").forEach((button) => button.addEventListener("click", () => { activeTab = button.dataset.tab || "write"; lastResult = ""; render(); }));
         document.querySelector("#schedule-form")?.addEventListener("submit", async (event) => {
@@ -571,12 +584,7 @@
           let composingKorean = false;
           const applyPatientSearch = (value) => {
             searchText = value;
-            render();
-            const input = document.querySelector("#patient-search");
-            if (input) {
-              input.focus();
-              input.setSelectionRange(input.value.length, input.value.length);
-            }
+            applyPatientSearchFilterToDom();
           };
           patientSearch.addEventListener("compositionstart", () => { composingKorean = true; });
           patientSearch.addEventListener("compositionend", (event) => {
@@ -587,6 +595,7 @@
             if (composingKorean || event.isComposing) return;
             applyPatientSearch(event.currentTarget.value);
           });
+          applyPatientSearchFilterToDom();
         }
       }
 
